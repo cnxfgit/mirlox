@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/varr_test.dir/adt-tests/mir-varr-test.c.o  -o varr_test  -lpthread 

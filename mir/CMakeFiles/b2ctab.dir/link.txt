@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/b2ctab.dir/mir-utils/b2ctab.c.o  -o b2ctab  -lpthread libmir.a -lpthread 

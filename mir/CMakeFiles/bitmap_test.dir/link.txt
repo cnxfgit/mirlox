@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/bitmap_test.dir/adt-tests/mir-bitmap-test.c.o  -o bitmap_test  -lpthread 

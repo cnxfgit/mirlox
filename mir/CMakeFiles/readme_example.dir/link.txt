@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/readme_example.dir/mir-tests/readme-example.c.o  -o readme_example  -lpthread libmir.a -lpthread 

@@ -1,0 +1,2 @@
+/usr/bin/ar qc libmir.a  CMakeFiles/mir.dir/mir.c.o CMakeFiles/mir.dir/mir-gen.c.o CMakeFiles/mir.dir/c2mir/c2mir.c.o
+/usr/bin/ranlib libmir.a

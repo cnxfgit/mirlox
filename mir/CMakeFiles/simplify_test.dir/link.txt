@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/simplify_test.dir/mir-tests/simplify.c.o  -o simplify_test  -lpthread libmir.a -lpthread 

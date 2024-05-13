@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/htab_test.dir/adt-tests/mir-htab-test.c.o  -o htab_test  -lpthread 

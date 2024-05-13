@@ -1,0 +1,15 @@
+{
+    "C_Cpp.clang_format_style": "{ BasedOnStyle: LLVM, BreakBeforeBraces: Attach, IndentWidth: 4, TabWidth: 4}",
+    "files.associations": {
+        "jit.h": "c",
+        "chunk.h": "c",
+        "vm.h": "c",
+        "memory.h": "c",
+        "compiler.h": "c",
+        "object.h": "c",
+        "value.h": "c",
+        "scanner.h": "c",
+        "debug.h": "c",
+        "table.h": "c"
+    },
+}

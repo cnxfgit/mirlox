@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/c2m.dir/c2mir/c2mir-driver.c.o  -o c2m  -lpthread libmir.a -ldl -lpthread 

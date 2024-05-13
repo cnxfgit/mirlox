@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/scan_test.dir/mir-tests/scan-test.c.o  -o scan_test  -lpthread libmir.a -lpthread 

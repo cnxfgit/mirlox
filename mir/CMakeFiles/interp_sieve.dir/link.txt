@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/interp_sieve.dir/mir-tests/sieve-interp.c.o  -o interp_sieve  -lpthread libmir.a -lpthread 
