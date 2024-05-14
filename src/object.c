@@ -7,16 +7,17 @@
 
 #include "memory.h"
 #include "object.h"
+#include "table.h"
 #include "value.h"
 #include "vm.h"
-#include "table.h"
 
 // 分配对象
-#define ALLOCATE_OBJ(type, objectType) (type*)allocateObject(sizeof(type), objectType)
+#define ALLOCATE_OBJ(type, objectType)                                         \
+    (type *)allocateObject(sizeof(type), objectType)
 
 // 分配对象
 static Obj *allocateObject(size_t size, ObjType type) {
-    Obj *object = (Obj *) reallocate(NULL, 0, size);
+    Obj *object = (Obj *)reallocate(NULL, 0, size);
     object->type = type;
     object->isMarked = false;
 
@@ -25,7 +26,7 @@ static Obj *allocateObject(size_t size, ObjType type) {
     vm.objects = object;
 
 #ifdef DEBUG_LOG_GC
-    printf("%p allocate %zu for %d\n", (void*)object, size, type);
+    printf("%p allocate %zu for %d\n", (void *)object, size, type);
 #endif
     return object;
 }
@@ -46,7 +47,7 @@ ObjClass *newClass(ObjString *name) {
 
 ObjClosure *newClosure(ObjFunction *function) {
     // 统计提升值
-    ObjUpvalue **upvalues = ALLOCATE(ObjUpvalue*, function->upvalueCount);
+    ObjUpvalue **upvalues = ALLOCATE(ObjUpvalue *, function->upvalueCount);
     for (int i = 0; i < function->upvalueCount; i++) {
         upvalues[i] = NULL;
     }
@@ -55,6 +56,12 @@ ObjClosure *newClosure(ObjFunction *function) {
     closure->function = function;
     closure->upvalues = upvalues;
     closure->upvalueCount = function->upvalueCount;
+
+#ifdef OPEN_JIT
+    closure->execCount = 0;
+    closure->jitFunction = NULL;
+    closure->jitStatus = JIT_NOT_COMPILE;
+#endif
     return closure;
 }
 
@@ -97,7 +104,7 @@ static ObjString *allocateString(char *chars, int length, uint32_t hash) {
 static uint32_t hashString(const char *key, int length) {
     uint32_t hash = 2166136261u;
     for (int i = 0; i < length; i++) {
-        hash ^= (uint8_t) key[i];
+        hash ^= (uint8_t)key[i];
         hash *= 16777619;
     }
     return hash;
@@ -119,7 +126,8 @@ ObjString *copyString(const char *chars, int length) {
     // 全局存在则直接用全局的
     uint32_t hash = hashString(chars, length);
     ObjString *interned = tableFindString(&vm.strings, chars, length, hash);
-    if (interned != NULL) return interned;
+    if (interned != NULL)
+        return interned;
 
     char *heapChars = ALLOCATE(char, length + 1);
     memcpy(heapChars, chars, length);
@@ -146,30 +154,29 @@ static void printFunction(ObjFunction *function) {
 
 void printObject(Value value) {
     switch (OBJ_TYPE(value)) {
-        case OBJ_BOUND_METHOD:
-            printFunction(AS_BOUND_METHOD(value)->method->function);
-            break;
-        case OBJ_CLASS:
-            printf("%s", AS_CLASS(value)->name->chars);
-            break;
-        case OBJ_CLOSURE:
-            printFunction(AS_CLOSURE(value)->function);
-            break;
-        case OBJ_FUNCTION:
-            printFunction(AS_FUNCTION(value));
-            break;
-        case OBJ_INSTANCE:
-            printf("%s instance",
-                   AS_INSTANCE(value)->klass->name->chars);
-            break;
-        case OBJ_NATIVE:
-            printf("<native fn>");
-            break;
-        case OBJ_STRING:
-            printf("%s", AS_CSTRING(value));
-            break;
-        case OBJ_UPVALUE:
-            printf("upvalue");
-            break;
+    case OBJ_BOUND_METHOD:
+        printFunction(AS_BOUND_METHOD(value)->method->function);
+        break;
+    case OBJ_CLASS:
+        printf("%s", AS_CLASS(value)->name->chars);
+        break;
+    case OBJ_CLOSURE:
+        printFunction(AS_CLOSURE(value)->function);
+        break;
+    case OBJ_FUNCTION:
+        printFunction(AS_FUNCTION(value));
+        break;
+    case OBJ_INSTANCE:
+        printf("%s instance", AS_INSTANCE(value)->klass->name->chars);
+        break;
+    case OBJ_NATIVE:
+        printf("<native fn>");
+        break;
+    case OBJ_STRING:
+        printf("%s", AS_CSTRING(value));
+        break;
+    case OBJ_UPVALUE:
+        printf("upvalue");
+        break;
     }
 }

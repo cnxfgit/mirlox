@@ -75,4 +75,14 @@ void push(Value value);
 // 弹出虚拟机栈
 Value pop();
 
+void runtimeError(const char *format, ...);
+
+Value peek(int distance);
+
+bool callValue(Value callee, int argCount);
+
+bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount);
+
+bool invoke(ObjString *name, int argCount);
+
 #endif

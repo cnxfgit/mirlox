@@ -30,7 +30,7 @@ static void resetStack() {
 }
 
 // 运行时异常
-static void runtimeError(const char *format, ...) {
+void runtimeError(const char *format, ...) {
     va_list args;
     va_start(args, format);
     vfprintf(stderr, format, args);
@@ -108,7 +108,7 @@ Value pop() {
 }
 
 // 查看栈中的值但是不弹出 peek(0)为栈顶
-static Value peek(int distance) { return vm.stackTop[-1 - distance]; }
+Value peek(int distance) { return vm.stackTop[-1 - distance]; }
 
 // 执行
 static bool call(ObjClosure *closure, int argCount) {
@@ -132,7 +132,7 @@ static bool call(ObjClosure *closure, int argCount) {
 }
 
 // 调用 值类型  仅接受 函数 类 方法
-static bool callValue(Value callee, int argCount) {
+bool callValue(Value callee, int argCount) {
     if (IS_OBJ(callee)) {
         switch (OBJ_TYPE(callee)) {
         case OBJ_BOUND_METHOD: {
@@ -170,7 +170,7 @@ static bool callValue(Value callee, int argCount) {
 }
 
 // 从类中执行方法
-static bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount) {
+bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount) {
     Value method;
     if (!tableGet(&klass->methods, name, &method)) {
         runtimeError("Undefined property '%s'.", name->chars);
@@ -180,7 +180,7 @@ static bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount) {
 }
 
 // 执行方法
-static bool invoke(ObjString *name, int argCount) {
+bool invoke(ObjString *name, int argCount) {
     Value receiver = peek(argCount);
 
     if (!IS_INSTANCE(receiver)) {
