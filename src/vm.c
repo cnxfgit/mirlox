@@ -125,29 +125,19 @@ static bool call(ObjClosure *closure, int argCount) {
         return false;
     }
 
-#ifdef OPEN_JIT
     if (closure->jitFunction != NULL) {
         closure->jitFunction(&vm, closure);
     } else {
-#endif
+#ifdef OPEN_JIT
+        jitCompile(&vm, closure);
+        closure->jitFunction(&vm, closure);
+#else
         CallFrame *frame = &vm.frames[vm.frameCount++];
         frame->closure = closure;
         frame->ip = closure->function->chunk.code;
         frame->slots = vm.stackTop - argCount - 1;
-#ifdef OPEN_JIT
-        closure->execCount++;
-
-#ifdef JIT_ALWAYS
-        if (closure->function->name) {
-            jitCompile(&vm, closure);
-        }
-#else
-        if (closure->execCount > JIT_FACTOR) {
-            jitCompile(&vm, closure);
-        }
 #endif
     }
-#endif
 
     return true;
 }

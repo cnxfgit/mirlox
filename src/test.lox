@@ -6,13 +6,9 @@
 //}
 
 fun a() {
-    print 1;
+    
 }
-var start = clock();
 a();
-var end = clock();
-print(end - start);
-start = clock();
 a();
-end = clock();
-print(end - start);
+a();
+a();

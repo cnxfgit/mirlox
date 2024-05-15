@@ -119,25 +119,61 @@ typedef struct {
 
 
 int jit_func_1 (VM *vm, ObjClosure* closure) {
-  CallFrame *frame = &vm->frames[vm->frameCount++];
-  frame->closure = closure;
-  frame->ip = closure->function->chunk.code;
-  frame->slots = vm->stackTop - closure->function->arity - 1;
-Value constant = 4607182418800017408L;
-push(constant);
-printValue(pop());
-printf("\n");
-push(NIL_VAL);
-Value result = pop();
-closeUpvalues(frame->slots);
-vm->frameCount--;
-if (vm->frameCount == 0) {
-  pop();
-  return INTERPRET_OK;
+vm->frameCount++;
+ObjClosure *closure = newClosure((ObjFunction *) 0x5634897fddb0));
+push(OBJ_VAL(closure));
+ObjString *name = (ObjString *)0x5634897fdd30
+tableSet(&vm->globals, name, peek(0));
+pop();
+Value value;
+if (!tableGet(&vm->globals, name, &value)) {
+  ObjString *name = (ObjString *)0x5634897fdd30
+  runtimeError("Undefined variable '%s'.", name->chars);
+  return INTERPRET_RUNTIME_ERROR;
 }
-vm->stackTop = frame->slots;
-push(result);
+push(value);
+if (!callValue(peek(0), 0)) {
+  return INTERPRET_RUNTIME_ERROR;
+}
 frame = &vm->frames[vm->frameCount - 1];
+pop();
+Value value;
+if (!tableGet(&vm->globals, name, &value)) {
+  ObjString *name = (ObjString *)0x5634897fdd30
+  runtimeError("Undefined variable '%s'.", name->chars);
+  return INTERPRET_RUNTIME_ERROR;
+}
+push(value);
+if (!callValue(peek(0), 0)) {
+  return INTERPRET_RUNTIME_ERROR;
+}
+frame = &vm->frames[vm->frameCount - 1];
+pop();
+Value value;
+if (!tableGet(&vm->globals, name, &value)) {
+  ObjString *name = (ObjString *)0x5634897fdd30
+  runtimeError("Undefined variable '%s'.", name->chars);
+  return INTERPRET_RUNTIME_ERROR;
+}
+push(value);
+if (!callValue(peek(0), 0)) {
+  return INTERPRET_RUNTIME_ERROR;
+}
+frame = &vm->frames[vm->frameCount - 1];
+pop();
+Value value;
+if (!tableGet(&vm->globals, name, &value)) {
+  ObjString *name = (ObjString *)0x5634897fdd30
+  runtimeError("Undefined variable '%s'.", name->chars);
+  return INTERPRET_RUNTIME_ERROR;
+}
+push(value);
+if (!callValue(peek(0), 0)) {
+  return INTERPRET_RUNTIME_ERROR;
+}
+frame = &vm->frames[vm->frameCount - 1];
+pop();
+push(NIL_VAL);
 return 0;
 }
 

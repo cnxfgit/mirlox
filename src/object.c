@@ -58,7 +58,6 @@ ObjClosure *newClosure(ObjFunction *function) {
     closure->upvalueCount = function->upvalueCount;
 
 #ifdef OPEN_JIT
-    closure->execCount = 0;
     closure->jitFunction = NULL;
 #endif
     return closure;

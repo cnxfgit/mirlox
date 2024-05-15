@@ -29,12 +29,4 @@
 // 是否开启JIT功能
 #define OPEN_JIT
 
-#ifdef OPEN_JIT
-// 是否执行jit的阈值
-#define JIT_FACTOR 1000
-
-// 无视阈值总是执行jit
-#define JIT_ALWAYS
-#endif
-
 #endif

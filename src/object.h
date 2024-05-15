@@ -107,7 +107,6 @@ typedef struct ObjClosure{
 
 #ifdef OPEN_JIT
     int(*jitFunction)(void*, struct ObjClosure*);
-    int execCount;
 #endif
 } ObjClosure;
 
