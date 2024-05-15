@@ -60,7 +60,6 @@ ObjClosure *newClosure(ObjFunction *function) {
 #ifdef OPEN_JIT
     closure->execCount = 0;
     closure->jitFunction = NULL;
-    closure->jitStatus = JIT_NOT_COMPILE;
 #endif
     return closure;
 }

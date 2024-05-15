@@ -13,9 +13,9 @@
 #define NAN_BOXING
 
 // 无异常反汇编当前字节码块
-//#define DEBUG_PRINT_CODE
+#define DEBUG_PRINT_CODE
 // 打印虚拟机栈和反汇编说明
-// #define DEBUG_TRACE_EXECUTION
+#define DEBUG_TRACE_EXECUTION
 
 // 频繁调用垃圾回收
 //#define DEBUG_STRESS_GC

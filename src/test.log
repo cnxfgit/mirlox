@@ -1,0 +1,143 @@
+#define FRAMES_MAX 64
+#define STACK_MAX (FRAMES_MAX * 256)
+#define TAG_NIL 1
+#define TAG_FALSE 2
+#define TAG_TRUE  3
+typedef char bool;
+typedef unsigned long int uint64_t;
+typedef unsigned long int	uintptr_t;
+typedef uint64_t Value;
+typedef unsigned char uint8_t;
+typedef unsigned int uint32_t;
+typedef long long size_t;
+#define SIGN_BIT ((uint64_t)0x8000000000000000)
+#define QNAN     ((uint64_t)0x7ffc000000000000)
+#define OBJ_VAL(obj)    (Value)(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(obj))
+#define NIL_VAL         ((Value)(uint64_t)(QNAN | TAG_NIL))
+
+typedef enum {
+   OBJ_BOUND_METHOD,
+   OBJ_CLASS,
+   OBJ_CLOSURE,
+   OBJ_FUNCTION,
+   OBJ_INSTANCE,
+   OBJ_NATIVE,
+   OBJ_STRING,
+   OBJ_UPVALUE,
+} ObjType;
+
+typedef enum {
+   INTERPRET_OK,
+   INTERPRET_COMPILE_ERROR,
+   INTERPRET_RUNTIME_ERROR
+} InterpretResult;
+
+typedef struct Obj {
+   ObjType type;
+   bool isMarked;
+   struct Obj *next;
+} Obj;
+
+typedef struct {
+    int capacity;
+    int count;
+    Value* values;
+} ValueArray;
+
+typedef struct {
+   int count;
+   int capacity;
+   uint8_t* code;
+   int* lines;
+   ValueArray constants;
+} Chunk;
+
+typedef struct {
+   Obj obj;
+   int length;
+   char *chars;
+   uint32_t hash;
+} ObjString;
+
+typedef struct {
+   Obj obj;
+   int arity;
+   int upvalueCount;
+   Chunk chunk;
+   ObjString *name;
+} ObjFunction;
+
+typedef struct ObjUpvalue {
+   Obj obj;
+   Value *location;
+   Value closed;
+   struct ObjUpvalue *next;
+} ObjUpvalue;
+
+typedef struct {
+   Obj obj;
+   ObjFunction *function;
+   ObjUpvalue **upvalues;
+   int upvalueCount;
+   int(*jitFunction)(void*);
+   int execCount;
+} ObjClosure;
+
+typedef struct {
+   ObjClosure* closure;
+   uint8_t* ip;
+   Value* slots;
+} CallFrame;
+
+typedef struct {
+   ObjString *key;
+   Value value;
+} Entry;
+
+typedef struct {
+   int count;
+   int capacity;
+   Entry *entries;
+} Table;
+
+typedef struct {
+   CallFrame frames[FRAMES_MAX];
+   int frameCount;
+   Value stack[STACK_MAX];
+   Value* stackTop;
+   Table globals;
+   Table strings;
+   ObjString* initString;
+   ObjUpvalue* openUpvalues;
+   size_t bytesAllocated;
+   size_t nextGC;
+   Obj* objects;
+   int grayCount;
+   int grayCapacity;
+   Obj** grayStack;
+} VM;
+
+
+int jit_func_1 (VM *vm, ObjClosure* closure) {
+  CallFrame *frame = &vm->frames[vm->frameCount++];
+  frame->closure = closure;
+  frame->ip = closure->function->chunk.code;
+  frame->slots = vm->stackTop - closure->function->arity - 1;
+Value constant = 4607182418800017408L;
+push(constant);
+printValue(pop());
+printf("\n");
+push(NIL_VAL);
+Value result = pop();
+closeUpvalues(frame->slots);
+vm->frameCount--;
+if (vm->frameCount == 0) {
+  pop();
+  return INTERPRET_OK;
+}
+vm->stackTop = frame->slots;
+push(result);
+frame = &vm->frames[vm->frameCount - 1];
+return 0;
+}
+

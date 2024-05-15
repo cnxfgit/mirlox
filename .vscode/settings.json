@@ -23,6 +23,11 @@
         "functional": "c",
         "tuple": "c",
         "type_traits": "c",
-        "utility": "c"
+        "utility": "c",
+        "typeinfo": "c",
+        "memory": "c",
+        "numeric": "c",
+        "cmath": "c",
+        "common.h": "c"
     },
 }

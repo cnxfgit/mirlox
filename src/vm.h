@@ -85,4 +85,6 @@ bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount);
 
 bool invoke(ObjString *name, int argCount);
 
+void closeUpvalues(Value *last);
+
 #endif

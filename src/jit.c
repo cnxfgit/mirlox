@@ -1,13 +1,15 @@
+#include <stdarg.h>
+
 #include "jit.h"
-#include "common.h"
 #include "memory.h"
-#include "object.h"
-#include "vm.h"
+#include "mir-gen.h"
 
 typedef struct LoxFunction {
     const char *name;
     void *func;
 } LoxFunction;
+
+static const char LOX_HEADER[];
 
 static LoxFunction LoxFunctions[] = {
     {"runtimeError", runtimeError},
@@ -17,6 +19,12 @@ static LoxFunction LoxFunctions[] = {
     {"callValue", callValue},
     {"invokeFromClass", invokeFromClass},
     {"invoke", invoke},
+    {"tableGet", tableGet},
+    {"tableSet", tableSet},
+    {"newClosure", newClosure},
+    {"closeUpvalues", closeUpvalues},
+    {"printf", printf},
+    {"printValue", printValue},
     {NULL, NULL},
 };
 
@@ -35,19 +43,6 @@ typedef struct JitBuffer {
     size_t size;
     size_t capacity;
 } JitBuffer;
-
-static int jit_getc(void *data) {
-    JitBuffer *buff = data;
-    if (buff->p >= buff->size)
-        return EOF;
-    int c = buff->buffer[buff->p];
-    if (c == 0) {
-        c = EOF;
-    } else {
-        buff->p++;
-    }
-    return c;
-}
 
 static void initBuffer(VM *vm, JitBuffer *buff, size_t capacity) {
     buff->size = buff->p = 0;
@@ -70,7 +65,7 @@ static void resizeBuffer(JitBuffer *buff, size_t buffSize) {
     buff->capacity = newsize;
 }
 
-#define FREE_BUFFER(buff) FREE_ARRAY(char, buff->buffer)
+#define FREE_BUFFER(buff) FREE_ARRAY(char, buff.buffer, buff.capacity)
 
 static void strTobuffer(JitBuffer *buff, const char *str) {
     size_t len = strlen(str);
@@ -82,7 +77,7 @@ static void strTobuffer(JitBuffer *buff, const char *str) {
     buff->buffer[buff->size] = 0;
 }
 
-static void fmtStrTobuffer(JitBuffer *buff, const char *fmt, ...) {
+static void fmtStrToBuffer(JitBuffer *buff, const char *fmt, ...) {
     va_list args;
     char localBuffer[1024];
     va_start(args, fmt);
@@ -93,11 +88,28 @@ static void fmtStrTobuffer(JitBuffer *buff, const char *fmt, ...) {
     strTobuffer(buff, localBuffer);
 }
 
-#define CODE(fmt, ...) fmtStrToBuff(buff, fmt, ##__VA_ARGS__)
+static int jit_getc(void *data) {
+    JitBuffer *buff = data;
+    if (buff->p >= buff->size)
+        return EOF;
+    int c = buff->buffer[buff->p];
+    if (c == 0) {
+        c = EOF;
+    } else {
+        buff->p++;
+    }
+    return c;
+}
+
+#define CODE(fmt, ...) fmtStrToBuffer(buff, fmt, ##__VA_ARGS__)
 
 #define OPEN_FUNC(name)                                                        \
     do {                                                                       \
-        CODE("int %s (VM *vm) {", name);                                       \
+        CODE("int %s (VM *vm, ObjClosure* closure) {", name);                  \
+        CODE("  CallFrame *frame = &vm->frames[vm->frameCount++];");           \
+        CODE("  frame->closure = closure;");                                   \
+        CODE("  frame->ip = closure->function->chunk.code;");                  \
+        CODE("  frame->slots = vm->stackTop - closure->function->arity - 1;"); \
     } while (0)
 
 #define CLOSE_FUNC                                                             \
@@ -112,7 +124,8 @@ static void setJmps(ObjClosure *closure, uint8_t *isJmps) {
     for (int pc = 0; pc < closure->function->chunk.count; pc++) {
         instruction = code[pc];
         switch (instruction) {
-        case OP_JUMP | OP_JUMP_IF_FALSE: {
+        case OP_JUMP:
+        case OP_JUMP_IF_FALSE: {
             pc += 2;
             uint16_t offset = (uint16_t)((code[pc - 2] << 8) | code[pc - 1]);
             isJmps[pc + offset] = 1;
@@ -131,15 +144,17 @@ static void setJmps(ObjClosure *closure, uint8_t *isJmps) {
 }
 
 static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
-                         char *name, int argCount) {
+                         char *name) {
     strTobuffer(buff, LOX_HEADER);
-    uint8_t *isJmps = reallocate(NULL, 0, closure->function->chunk.count);
+    uint8_t *isJmps = malloc(closure->function->chunk.count * sizeof(uint8_t));
     memset(isJmps, 0, closure->function->chunk.count * sizeof(isJmps[0]));
     OPEN_FUNC(name);
 
     setJmps(closure, isJmps);
 
-    CallFrame *frame = &vm->frames[vm->frameCount++];
+    int argCount = closure->function->arity;
+    CallFrame callFrame;
+    CallFrame *frame = &callFrame;
     frame->closure = closure;
     frame->ip = closure->function->chunk.code;
     frame->slots = vm->stackTop - argCount - 1;
@@ -161,7 +176,8 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
         CODE("push(%s(a %s b)); ", valueType, op);                             \
     } while (false)
 
-    for (;;) {
+    for (; frame->ip - closure->function->chunk.code <
+           closure->function->chunk.count;) {
         uint8_t instruction = READ_BYTE();
         int pc = frame->ip - closure->function->chunk.code;
         if (isJmps[pc]) {
@@ -171,7 +187,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
         switch (instruction) {
         case OP_CONSTANT: {
             Value value = READ_CONSTANT();
-            CODE("Value constant = %llu;", value);
+            CODE("Value constant = %lluL;", value);
             CODE("push(constant);");
             break;
         }
@@ -412,8 +428,8 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             CODE("  pop();");
             CODE("  return INTERPRET_OK;");
             CODE("}");
-                
-            CODE("vm->stackTop = frame->slots;"); 
+
+            CODE("vm->stackTop = frame->slots;");
             CODE("push(result);");
             CODE("frame = &vm->frames[vm->frameCount - 1];");
             break;
@@ -422,21 +438,23 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             push(OBJ_VAL(newClass(READ_STRING())));
             break;
         case OP_INHERIT: {
-            Value superclass = peek(1);
-            if (!IS_CLASS(superclass)) {
-                runtimeError("Superclass must be a class.");
-                return INTERPRET_RUNTIME_ERROR;
-            }
+            CODE("Value superclass = peek(1);");
+            CODE("if (!IS_CLASS(superclass)) {");
+            CODE("  runtimeError(\"Superclass must be a class.\");");
+            CODE("  return INTERPRET_RUNTIME_ERROR;");
+            CODE("}");
 
-            ObjClass *subclass = AS_CLASS(peek(0));
-            tableAddAll(&AS_CLASS(superclass)->methods, &subclass->methods);
-            pop(); // Subclass.
+            CODE("ObjClass *subclass = AS_CLASS(peek(0));");
+            CODE("tableAddAll(&AS_CLASS(superclass)->methods, "
+                 "&subclass->methods);");
+            CODE("pop();");
             break;
         }
-        case OP_METHOD:
+        case OP_METHOD: {
             ObjString *name = READ_STRING();
             CODE("defineMethod((OBjString *) %p);", name);
             break;
+        }
         }
     }
 
@@ -447,6 +465,181 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
 #undef BINARY_OP
 
     CLOSE_FUNC;
+
+    free(isJmps);
+
+    printf("%s\n", &buff->buffer[strlen(LOX_HEADER)]);
+    FILE *f = fopen("test.log", "w+");
+    fprintf(f, "%s\n", buff->buffer);
+    fclose(f);
 }
 
-static const char LOX_HEADER[] = {""};
+void jitCompile(VM *vm, ObjClosure *closure) {
+    MIR_context_t ctx = vm->mirContext;
+    c2mir_init(ctx);
+    MIR_gen_init(ctx, 2);
+    JitBuffer buff;
+    initBuffer(vm, &buff, strlen(LOX_HEADER) + 4096);
+
+    char name[32];
+
+    snprintf(name, sizeof(name), "jit_func_%ld", ++vm->mirOptions.module_num);
+    codeGenerate(vm, &buff, closure, name);
+
+    if (!c2mir_compile(ctx, &vm->mirOptions, jit_getc, &buff, name, NULL)) {
+        runtimeError("jit compiler error!");
+        goto CLEANUP;
+    }
+    /* c2mir_compile will clear the name */
+    snprintf(name, sizeof(name), "jit_func_%ld", vm->mirOptions.module_num);
+
+    MIR_module_t module = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    MIR_load_module(ctx, module);
+    MIR_link(ctx, MIR_set_gen_interface, import_resolver);
+    MIR_item_t func = DLIST_HEAD(MIR_item_t, module->items);
+    while (func) {
+        if (func->item_type == MIR_func_item &&
+            !strcmp(name, func->u.func->name)) {
+            break;
+        }
+        func = DLIST_NEXT(MIR_item_t, func);
+    }
+    if (func == NULL) {
+        runtimeError("jit compiler error!");
+        goto CLEANUP;
+    }
+    int (*fp)(void *, ObjClosure *) = MIR_gen(ctx, 0, func);
+    if (fp) {
+        closure->jitFunction = fp;
+    } else {
+        closure->jitFunction = NULL;
+        runtimeError("jit gen error!");
+        goto CLEANUP;
+    }
+CLEANUP:
+    MIR_gen_finish(ctx);
+    c2mir_finish(ctx);
+    FREE_BUFFER(buff);
+}
+
+static const char LOX_HEADER[] = {
+    "#define FRAMES_MAX 64\n"
+    "#define STACK_MAX (FRAMES_MAX * 256)\n"
+    "#define TAG_NIL 1\n"
+    "#define TAG_FALSE 2\n"
+    "#define TAG_TRUE  3\n"
+    "typedef char bool;\n"
+    "typedef unsigned long int uint64_t;\n"
+    "typedef unsigned long int	uintptr_t;\n"
+    "typedef uint64_t Value;\n"
+    "typedef unsigned char uint8_t;\n"
+    "typedef unsigned int uint32_t;\n"
+    "typedef long long size_t;\n"
+    "#define SIGN_BIT ((uint64_t)0x8000000000000000)\n"
+    "#define QNAN     ((uint64_t)0x7ffc000000000000)\n"
+    "#define OBJ_VAL(obj)    (Value)(SIGN_BIT | QNAN | "
+    "(uint64_t)(uintptr_t)(obj))\n"
+    "#define NIL_VAL         ((Value)(uint64_t)(QNAN | TAG_NIL))\n"
+    "\n"
+    "typedef enum {\n"
+    "   OBJ_BOUND_METHOD,\n"
+    "   OBJ_CLASS,\n"
+    "   OBJ_CLOSURE,\n"
+    "   OBJ_FUNCTION,\n"
+    "   OBJ_INSTANCE,\n"
+    "   OBJ_NATIVE,\n"
+    "   OBJ_STRING,\n"
+    "   OBJ_UPVALUE,\n"
+    "} ObjType;\n"
+    "\n"
+    "typedef enum {\n"
+    "   INTERPRET_OK,\n"
+    "   INTERPRET_COMPILE_ERROR,\n"
+    "   INTERPRET_RUNTIME_ERROR\n"
+    "} InterpretResult;\n"
+    "\n"
+    "typedef struct Obj {\n"
+    "   ObjType type;\n"
+    "   bool isMarked;\n"
+    "   struct Obj *next;\n"
+    "} Obj;\n"
+    "\n"
+    "typedef struct {\n"
+    "    int capacity;\n"
+    "    int count;\n"
+    "    Value* values;\n"
+    "} ValueArray;\n"
+    "\n"
+    "typedef struct {\n"
+    "   int count;\n"
+    "   int capacity;\n"
+    "   uint8_t* code;\n"
+    "   int* lines;\n"
+    "   ValueArray constants;\n"
+    "} Chunk;\n"
+    "\n"
+    "typedef struct {\n"
+    "   Obj obj;\n"
+    "   int length;\n"
+    "   char *chars;\n"
+    "   uint32_t hash;\n"
+    "} ObjString;\n"
+    "\n"
+    "typedef struct {\n"
+    "   Obj obj;\n"
+    "   int arity;\n"
+    "   int upvalueCount;\n"
+    "   Chunk chunk;\n"
+    "   ObjString *name;\n"
+    "} ObjFunction;\n"
+    "\n"
+    "typedef struct ObjUpvalue {\n"
+    "   Obj obj;\n"
+    "   Value *location;\n"
+    "   Value closed;\n"
+    "   struct ObjUpvalue *next;\n"
+    "} ObjUpvalue;\n"
+    "\n"
+    "typedef struct {\n"
+    "   Obj obj;\n"
+    "   ObjFunction *function;\n"
+    "   ObjUpvalue **upvalues;\n"
+    "   int upvalueCount;\n"
+    "   int(*jitFunction)(void*);\n"
+    "   int execCount;\n"
+    "} ObjClosure;\n"
+    "\n"
+    "typedef struct {\n"
+    "   ObjClosure* closure;\n"
+    "   uint8_t* ip;\n"
+    "   Value* slots;\n"
+    "} CallFrame;\n"
+    "\n"
+    "typedef struct {\n"
+    "   ObjString *key;\n"
+    "   Value value;\n"
+    "} Entry;\n"
+    "\n"
+    "typedef struct {\n"
+    "   int count;\n"
+    "   int capacity;\n"
+    "   Entry *entries;\n"
+    "} Table;\n"
+    "\n"
+    "typedef struct {\n"
+    "   CallFrame frames[FRAMES_MAX];\n"
+    "   int frameCount;\n"
+    "   Value stack[STACK_MAX];\n"
+    "   Value* stackTop;\n"
+    "   Table globals;\n"
+    "   Table strings;\n"
+    "   ObjString* initString;\n"
+    "   ObjUpvalue* openUpvalues;\n"
+    "   size_t bytesAllocated;\n"
+    "   size_t nextGC;\n"
+    "   Obj* objects;\n"
+    "   int grayCount;\n"
+    "   int grayCapacity;\n"
+    "   Obj** grayStack;\n"
+    "} VM;\n"
+    "\n"};

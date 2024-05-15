@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -I../mir/ -I../mir/c2mir -L../mir/
-LIBS = -lmir
+CFLAGS = -g -I../mir/ -I../mir/c2mir -L../mir/ 
+LIBS = -lmir -lpthread
 
 all: main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o value.o vm.o jit.o
 	$(CC) ${CFLAGS} main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o 	\
@@ -36,7 +36,7 @@ value.o: common.h value.c value.h memory.h object.h
 vm.o: common.h vm.c vm.h compiler.h debug.h memory.h object.h jit.h
 	$(CC) ${CFLAGS} -c vm.c -o vm.o
 
-jit.o: common.h
+jit.o: common.h vm.h jit.h jit.c object.h
 	$(CC) ${CFLAGS} -c jit.c -o jit.o
 
 clean:

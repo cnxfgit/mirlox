@@ -7,7 +7,6 @@
 
 #include "chunk.h"
 #include "common.h"
-#include "jit.h"
 #include "table.h"
 #include "value.h"
 
@@ -100,15 +99,14 @@ typedef struct ObjUpvalue {
 } ObjUpvalue;
 
 // 闭包对象
-typedef struct {
+typedef struct ObjClosure{
     Obj obj;               // 公共对象头
     ObjFunction *function; // 裸函数
     ObjUpvalue **upvalues; // 提升值数组
     int upvalueCount;      // 提升值数量
 
 #ifdef OPEN_JIT
-    NativeFn jitFunction;
-    JitStatus jitStatus;
+    int(*jitFunction)(void*, struct ObjClosure*);
     int execCount;
 #endif
 } ObjClosure;

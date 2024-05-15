@@ -10,10 +10,12 @@
 #include "common.h"
 #include "compiler.h"
 #include "debug.h"
+#ifdef OPEN_JIT
+#include "jit.h"
+#endif
 #include "memory.h"
 #include "object.h"
 #include "vm.h"
-#include "jit.h"
 
 VM vm;
 
@@ -123,10 +125,29 @@ static bool call(ObjClosure *closure, int argCount) {
         return false;
     }
 
-    CallFrame *frame = &vm.frames[vm.frameCount++];
-    frame->closure = closure;
-    frame->ip = closure->function->chunk.code;
-    frame->slots = vm.stackTop - argCount - 1;
+#ifdef OPEN_JIT
+    if (closure->jitFunction != NULL) {
+        closure->jitFunction(&vm, closure);
+    } else {
+#endif
+        CallFrame *frame = &vm.frames[vm.frameCount++];
+        frame->closure = closure;
+        frame->ip = closure->function->chunk.code;
+        frame->slots = vm.stackTop - argCount - 1;
+#ifdef OPEN_JIT
+        closure->execCount++;
+
+#ifdef JIT_ALWAYS
+        if (closure->function->name) {
+            jitCompile(&vm, closure);
+        }
+#else
+        if (closure->execCount > JIT_FACTOR) {
+            jitCompile(&vm, closure);
+        }
+#endif
+    }
+#endif
 
     return true;
 }
@@ -240,7 +261,7 @@ static ObjUpvalue *captureUpvalue(Value *local) {
 }
 
 // 关闭提升值
-static void closeUpvalues(Value *last) {
+void closeUpvalues(Value *last) {
     while (vm.openUpvalues != NULL && vm.openUpvalues->location >= last) {
         ObjUpvalue *upvalue = vm.openUpvalues;
         upvalue->closed = *upvalue->location;
