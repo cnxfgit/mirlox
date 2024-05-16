@@ -125,21 +125,20 @@ static bool call(ObjClosure *closure, int argCount) {
         return false;
     }
 
-    if (closure->jitFunction != NULL) {
-        closure->jitFunction(&vm, closure);
-    } else {
 #ifdef OPEN_JIT
-        jitCompile(&vm, closure);
-        closure->jitFunction(&vm, closure);
-#else
-        CallFrame *frame = &vm.frames[vm.frameCount++];
-        frame->closure = closure;
-        frame->ip = closure->function->chunk.code;
-        frame->slots = vm.stackTop - argCount - 1;
-#endif
+    if (closure->jitFunction != NULL) {
+        return closure->jitFunction(&vm, closure);
+    } else {
+        jitCompile(&vm, closure, argCount);
+        return closure->jitFunction(&vm, closure);
     }
-
+#else
+    CallFrame *frame = &vm.frames[vm.frameCount++];
+    frame->closure = closure;
+    frame->ip = closure->function->chunk.code;
+    frame->slots = vm.stackTop - argCount - 1;
     return true;
+#endif
 }
 
 // 调用 值类型  仅接受 函数 类 方法
@@ -512,7 +511,7 @@ static InterpretResult run() {
             if (!callValue(peek(argCount), argCount)) {
                 return INTERPRET_RUNTIME_ERROR;
             }
-            // 调用成功后将栈帧还回去
+            // 调用后将栈帧设置成新函数的
             frame = &vm.frames[vm.frameCount - 1];
             break;
         }
@@ -607,7 +606,11 @@ InterpretResult interpret(const char *source) {
     ObjClosure *closure = newClosure(function);
     pop();
     push(OBJ_VAL(closure));
-    call(closure, 0);
 
+#ifdef OPEN_JIT
+    return call(closure, 0);
+#else
+    call(closure, 0);
     return run();
+#endif
 }

@@ -16,6 +16,8 @@ typedef unsigned long long size_t;
 #define QNAN     ((uint64_t)0x7ffc000000000000)
 #define OBJ_VAL(obj)    (Value)(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(obj))
 #define NIL_VAL         ((Value)(uint64_t)(QNAN | TAG_NIL))
+#define true 1
+#define false 0
 
 typedef enum {
    OBJ_BOUND_METHOD,
@@ -121,8 +123,10 @@ typedef struct {
 
 Value pop();
 void push(Value);
+Value peek(int distance);
 void runtimeError(const char *, ...);
 bool tableGet(Table *, ObjString *, Value *);
+bool tableSet(Table *, ObjString *, Value);
 void closeUpvalues(Value *);
 ObjClosure *newClosure(ObjFunction *);
 bool callValue(Value, int);
@@ -134,22 +138,11 @@ int jit_func_1 (VM *vm, ObjClosure* _closure) {
   frame->ip = _closure->function->chunk.code;
   frame->slots = vm->stackTop - 0 - 1;
   ObjString *name;
-  ObjClosure *closure = newClosure((ObjFunction *) 0x55eafe744db0);
-  push(OBJ_VAL(closure));
-  name = (ObjString *)0x55eafe744d30;
-  tableSet(&vm->globals, name, peek(0));
+  push(BOOL_VAL(true));
+  if (isFalsey(peek(0)))
+      goto Label_6;
   pop();
-  Value value;
-  name = (ObjString *)0x55eafe744d30;
-  if (!tableGet(&vm->globals, name, &value)) {
-      runtimeError("Undefined variable '%s'.", name->chars);
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  push(value);
-  if (!callValue(peek(0), 0)) {
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  frame = &vm->frames[vm->frameCount - 1];
+  goto Label_7;
   pop();
   push(NIL_VAL);
   Value result = pop();

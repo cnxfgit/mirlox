@@ -44,7 +44,7 @@ typedef struct JitBuffer {
     size_t capacity;
 } JitBuffer;
 
-static void initBuffer(VM *vm, JitBuffer *buff, size_t capacity) {
+static void initBuffer(JitBuffer *buff, size_t capacity) {
     buff->size = buff->p = 0;
     if (capacity <= 0) {
         buff->buffer = NULL;
@@ -105,16 +105,18 @@ static int jit_getc(void *data) {
 
 #define OPEN_FUNC(name)                                                        \
     do {                                                                       \
-        CODE("int %s (VM *vm, ObjClosure* closure) {", name);                  \
+        CODE("int %s (VM *vm, ObjClosure* _closure) {", name);                 \
         CODE("  CallFrame *frame = &vm->frames[vm->frameCount++];");           \
-        CODE("  frame->closure = closure;");                                   \
-        CODE("  frame->ip = closure->function->chunk.code;");                  \
-        CODE("  frame->slots = vm->stackTop - closure->function->arity - 1;"); \
+        CODE("  frame->closure = _closure;");                                  \
+        CODE("  frame->ip = _closure->function->chunk.code;");                 \
+        CODE("  frame->slots = vm->stackTop - %d - 1;", argCount);             \
+                                                                               \
+        CODE("  ObjString *name;");                                            \
     } while (0)
 
 #define CLOSE_FUNC                                                             \
     do {                                                                       \
-        CODE("return 0;");                                                     \
+        CODE("  return INTERPRET_OK;");                                        \
         CODE("}");                                                             \
     } while (0)
 
@@ -144,15 +146,15 @@ static void setJmps(ObjClosure *closure, uint8_t *isJmps) {
 }
 
 static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
-                         char *name) {
+                         char *name, int argCount) {
     strTobuffer(buff, LOX_HEADER);
-    uint8_t *isJmps = malloc(closure->function->chunk.count * sizeof(uint8_t));
-    memset(isJmps, 0, closure->function->chunk.count * sizeof(isJmps[0]));
+    int codeCount = closure->function->chunk.count;
+    uint8_t *isJmps = malloc(codeCount * sizeof(uint8_t));
+    memset(isJmps, 0, codeCount * sizeof(isJmps[0]));
     OPEN_FUNC(name);
 
     setJmps(closure, isJmps);
 
-    int argCount = closure->function->arity;
     CallFrame callFrame;
     CallFrame *frame = &callFrame;
     frame->closure = closure;
@@ -167,144 +169,146 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
 #define READ_STRING() AS_STRING(READ_CONSTANT())
 #define BINARY_OP(valueType, op)                                               \
     do {                                                                       \
-        CODE("if (!IS_NUMBER(peek(0)) || !IS_NUMBER(peek(1))) {");             \
-        CODE("  runtimeError(\"Operands must be numbers.\");");                \
-        CODE("  return INTERPRET_RUNTIME_ERROR; ");                            \
-        CODE("}");                                                             \
-        CODE("double b = AS_NUMBER(pop());");                                  \
-        CODE("double a = AS_NUMBER(pop());");                                  \
-        CODE("push(%s(a %s b)); ", valueType, op);                             \
+        CODE("  if (!IS_NUMBER(peek(0)) || !IS_NUMBER(peek(1))) {");           \
+        CODE("      runtimeError(\"Operands must be numbers.\");");            \
+        CODE("      return INTERPRET_RUNTIME_ERROR; ");                        \
+        CODE("  }");                                                           \
+        CODE("  double b = AS_NUMBER(pop());");                                \
+        CODE("  double a = AS_NUMBER(pop());");                                \
+        CODE("  push(%s(a %s b)); ", valueType, op);                           \
     } while (false)
 
-    for (; frame->ip - closure->function->chunk.code <
-           closure->function->chunk.count;) {
+    int pc = frame->ip - closure->function->chunk.code;
+    while (pc < codeCount) {
         uint8_t instruction = READ_BYTE();
-        int pc = frame->ip - closure->function->chunk.code;
-        if (isJmps[pc]) {
+        pc = frame->ip - closure->function->chunk.code;
+        if (pc < codeCount && isJmps[pc]) {
             CODE("Label_%d:", pc);
         }
 
         switch (instruction) {
         case OP_CONSTANT: {
             Value value = READ_CONSTANT();
-            CODE("Value constant = %lluL;", value);
-            CODE("push(constant);");
+            CODE("  Value constant = %luUL;", value);
+            CODE("  push(constant);");
             break;
         }
         case OP_NIL:
-            CODE("push(NIL_VAL);");
+            CODE("  push(NIL_VAL);");
             break;
         case OP_TRUE:
-            CODE("push(BOOL_VAL(true));");
+            CODE("  push(BOOL_VAL(true));");
             break;
         case OP_FALSE:
-            CODE("push(BOOL_VAL(false));");
+            CODE("  push(BOOL_VAL(false));");
             break;
         case OP_POP:
-            CODE("pop();");
+            CODE("  pop();");
             break;
         case OP_GET_LOCAL: {
             Value value = READ_BYTE();
-            CODE("uint8_t slot = %u;", (uint8_t)value);
-            CODE("push(frame->slots[slot]);");
+            CODE("  uint8_t slot = %u;", (uint8_t)value);
+            CODE("  push(frame->slots[slot]);");
             break;
         }
         case OP_SET_LOCAL: {
             Value value = READ_BYTE();
-            CODE("uint8_t slot = %u;", (uint8_t)value);
-            CODE("frame->slots[slot] = peek(0);");
+            CODE("  uint8_t slot = %u;", (uint8_t)value);
+            CODE("  frame->slots[slot] = peek(0);");
             break;
         }
         case OP_GET_GLOBAL: {
             ObjString *name = READ_STRING();
-            CODE("Value value;");
-            CODE("if (!tableGet(&vm->globals, name, &value)) {");
-            CODE("  ObjString *name = (ObjString *)%p", name);
-            CODE("  runtimeError(\"Undefined variable '%%s'.\", name->chars);");
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
-            CODE("push(value);");
+            CODE("  Value value;");
+            CODE("  name = (ObjString *)%p;", name);
+            CODE("  if (!tableGet(&vm->globals, name, &value)) {");
+            CODE("      runtimeError(\"Undefined variable '%%s'.\", "
+                 "name->chars);");
+            CODE("      return INTERPRET_RUNTIME_ERROR;");
+            CODE("  }");
+            CODE("  push(value);");
             break;
         }
         case OP_DEFINE_GLOBAL: {
             ObjString *name = READ_STRING();
-            CODE("ObjString *name = (ObjString *)%p", name);
-            CODE("tableSet(&vm->globals, name, peek(0));");
-            CODE("pop();");
+            CODE("  name = (ObjString *)%p;", name);
+            CODE("  tableSet(&vm->globals, name, peek(0));");
+            CODE("  pop();");
             break;
         }
         case OP_SET_GLOBAL: {
             ObjString *name = READ_STRING();
-            CODE("if (tableSet(&vm->globals, name, peek(0))) {");
-            CODE("  ObjString *name = (ObjString *)%p", name);
-            CODE("  tableDelete(&vm->globals, name);");
-            CODE("  runtimeError(\"Undefined variable '%%s'.\", name->chars);");
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
+            CODE("  if (tableSet(&vm->globals, name, peek(0))) {");
+            CODE("      name = (ObjString *)%p;", name);
+            CODE("      tableDelete(&vm->globals, name);");
+            CODE("      runtimeError(\"Undefined variable '%%s'.\", "
+                 "name->chars);");
+            CODE("      return INTERPRET_RUNTIME_ERROR;");
+            CODE("  }");
             break;
         }
         case OP_GET_UPVALUE: {
             Value value = READ_BYTE();
-            CODE("uint8_t slot = %u;", (uint8_t)value);
-            CODE("push(*frame->closure->upvalues[slot]->location);");
+            CODE("  uint8_t slot = %u;", (uint8_t)value);
+            CODE("  push(*frame->closure->upvalues[slot]->location);");
             break;
         }
         case OP_SET_UPVALUE: {
             Value value = READ_BYTE();
-            CODE("uint8_t slot = %u;", (uint8_t)value);
-            CODE("*frame->closure->upvalues[slot]->location = peek(0);");
+            CODE("  uint8_t slot = %u;", (uint8_t)value);
+            CODE("  *frame->closure->upvalues[slot]->location = peek(0);");
             break;
         }
         case OP_GET_PROPERTY: {
-            CODE("if (!IS_INSTANCE(peek(0))) {");
-            CODE("  runtimeError(\"Only instances have properties.\");");
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
-
-            CODE("ObjInstance *instance = AS_INSTANCE(peek(0));");
-            ObjString *name = READ_STRING();
-            CODE("ObjString *name = (ObjString *)%p;", name);
-
-            CODE("Value value;");
-            CODE("if (tableGet(&instance->fields, name, &value)) {");
-            CODE("  pop();");
-            CODE("  push(value);");
-            CODE("} else {");
-            CODE("  if (!bindMethod(instance->klass, name)) {");
+            CODE("  if (!IS_INSTANCE(peek(0))) {");
+            CODE("      runtimeError(\"Only instances have properties.\");");
             CODE("      return INTERPRET_RUNTIME_ERROR;");
             CODE("  }");
-            CODE("}");
+
+            CODE("  ObjInstance *instance = AS_INSTANCE(peek(0));");
+            ObjString *name = READ_STRING();
+            CODE("  name = (ObjString *)%p;", name);
+
+            CODE("  Value value;");
+            CODE("  if (tableGet(&instance->fields, name, &value)) {");
+            CODE("      pop();");
+            CODE("      push(value);");
+            CODE("  } else {");
+            CODE("      if (!bindMethod(instance->klass, name)) {");
+            CODE("          return INTERPRET_RUNTIME_ERROR;");
+            CODE("      }");
+            CODE("  }");
             break;
         }
         case OP_SET_PROPERTY: {
-            CODE("if (!IS_INSTANCE(peek(1))) {");
-            CODE("  runtimeError(\"Only instances have fields.\");");
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
+            CODE("  if (!IS_INSTANCE(peek(1))) {");
+            CODE("      runtimeError(\"Only instances have fields.\");");
+            CODE("      return INTERPRET_RUNTIME_ERROR;");
+            CODE("  }");
 
-            CODE("ObjInstance *instance = AS_INSTANCE(peek(1));");
+            CODE("  ObjInstance *instance = AS_INSTANCE(peek(1));");
             ObjString *name = READ_STRING();
-            CODE("tableSet(&instance->fields, (ObjString *)%p, peek(0));",
+            CODE("  tableSet(&instance->fields, (ObjString *)%p, peek(0));",
                  name);
-            CODE("Value value = pop();");
-            CODE("pop();");
-            CODE("push(value);");
+            CODE("  Value value = pop();");
+            CODE("  pop();");
+            CODE("  push(value);");
             break;
         }
         case OP_GET_SUPER: {
             ObjString *name = READ_STRING();
-            CODE("ObjString *name = (ObjString *)%p;", name);
-            CODE("ObjClass *superclass = AS_CLASS(pop());");
+            CODE("  name = (ObjString *)%p;", name);
+            CODE("  ObjClass *superclass = AS_CLASS(pop());");
 
-            CODE("if (!bindMethod(superclass, name)) {");
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
+            CODE("  if (!bindMethod(superclass, name)) {");
+            CODE("      return INTERPRET_RUNTIME_ERROR;");
+            CODE("  }");
             break;
         }
         case OP_EQUAL: {
-            CODE("Value b = pop();");
-            CODE("Value a = pop();");
-            CODE("push(BOOL_VAL(valuesEqual(a, b)));");
+            CODE("  Value b = pop();");
+            CODE("  Value a = pop();");
+            CODE("  push(BOOL_VAL(valuesEqual(a, b)));");
             break;
         }
         case OP_GREATER:
@@ -314,17 +318,17 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             BINARY_OP("BOOL_VAL", "<");
             break;
         case OP_ADD: {
-            CODE("if (IS_STRING(peek(0)) && IS_STRING(peek(1))) {");
-            CODE("  concatenate();");
-            CODE("} else if (IS_NUMBER(peek(0)) && IS_NUMBER(peek(1))) {");
-            CODE("  double b = AS_NUMBER(pop());");
-            CODE("  double a = AS_NUMBER(pop());");
-            CODE("  push(NUMBER_VAL(a + b));");
-            CODE("} else {");
-            CODE("  runtimeError(\"Operands must be two numbers or two "
+            CODE("  if (IS_STRING(peek(0)) && IS_STRING(peek(1))) {");
+            CODE("      concatenate();");
+            CODE("  } else if (IS_NUMBER(peek(0)) && IS_NUMBER(peek(1))) {");
+            CODE("      double b = AS_NUMBER(pop());");
+            CODE("      double a = AS_NUMBER(pop());");
+            CODE("      push(NUMBER_VAL(a + b));");
+            CODE("  } else {");
+            CODE("      runtimeError(\"Operands must be two numbers or two "
                  "strings.\");");
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
+            CODE("      return INTERPRET_RUNTIME_ERROR;");
+            CODE("  }");
             break;
         }
         case OP_SUBTRACT:
@@ -337,122 +341,123 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             BINARY_OP("NUMBER_VAL", "/");
             break;
         case OP_NOT:
-            CODE("push(BOOL_VAL(isFalsey(pop())));");
+            CODE("  push(BOOL_VAL(isFalsey(pop())));");
             break;
         case OP_NEGATE:
-            CODE("if (!IS_NUMBER(peek(0))) {");
-            CODE("  runtimeError(\"Operand must be a number.\");");
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
-            CODE("push(NUMBER_VAL(-AS_NUMBER(pop())));");
+            CODE("  if (!IS_NUMBER(peek(0))) {");
+            CODE("      runtimeError(\"Operand must be a number.\");");
+            CODE("      return INTERPRET_RUNTIME_ERROR;");
+            CODE("  }");
+            CODE("  push(NUMBER_VAL(-AS_NUMBER(pop())));");
             break;
         case OP_PRINT: {
-            CODE("printValue(pop());");
-            CODE("printf(\"\\n\");");
+            CODE("  printValue(pop());");
+            CODE("  printf(\"\\n\");");
             break;
         }
         case OP_JUMP: {
             uint16_t offset = READ_SHORT();
-            CODE("goto Label_%d;", pc + offset);
+            CODE("  goto Label_%d;", pc + offset);
             break;
         }
         case OP_JUMP_IF_FALSE: {
             uint16_t offset = READ_SHORT();
-            CODE("if (isFalsey(peek(0)))");
-            CODE("  goto Label_%d;", pc + offset);
+            CODE("  if (isFalsey(peek(0)))");
+            CODE("      goto Label_%d;", pc + offset);
             break;
         }
         case OP_LOOP: {
             uint16_t offset = READ_SHORT();
-            CODE("goto Label_%d;", pc - offset);
+            CODE("  goto Label_%d;", pc - offset);
             break;
         }
         case OP_CALL: {
             int argCount = READ_BYTE();
-            CODE("if (!callValue(peek(%d), %d)) {", argCount, argCount);
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
-            CODE("frame = &vm->frames[vm->frameCount - 1];");
+            CODE("  if (!callValue(peek(%d), %d)) {", argCount, argCount);
+            CODE("      return INTERPRET_RUNTIME_ERROR;");
+            CODE("  }");
+            CODE("  frame = &vm->frames[vm->frameCount - 1];");
             break;
         }
         case OP_INVOKE: {
             ObjString *method = READ_STRING();
             int argCount = READ_BYTE();
-            CODE("if (!invoke(%p, %d)) {", method, argCount);
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
-            CODE("frame = &vm->frames[vm->frameCount - 1];");
+            CODE("  if (!invoke(%p, %d)) {", method, argCount);
+            CODE("      return INTERPRET_RUNTIME_ERROR;");
+            CODE("  }");
+            CODE("  frame = &vm->frames[vm->frameCount - 1];");
             break;
         }
         case OP_SUPER_INVOKE: {
             ObjString *method = READ_STRING();
             int argCount = READ_BYTE();
-            CODE("ObjClass *superclass = AS_CLASS(pop());");
-            CODE("if (!invokeFromClass(superclass, %p, %d)) {", method,
+            CODE("  ObjClass *superclass = AS_CLASS(pop());");
+            CODE("  if (!invokeFromClass(superclass, %p, %d)) {", method,
                  argCount);
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
-            CODE("frame = &vm->frames[vm->frameCount - 1];");
+            CODE("      return INTERPRET_RUNTIME_ERROR;");
+            CODE("  }");
+            CODE("  frame = &vm->frames[vm->frameCount - 1];");
             break;
         }
         case OP_CLOSURE: {
             ObjFunction *function = AS_FUNCTION(READ_CONSTANT());
-            CODE("ObjClosure *closure = newClosure((ObjFunction *) %p));",
+            CODE("  ObjClosure *closure = newClosure((ObjFunction *) %p);",
                  function);
-            CODE("push(OBJ_VAL(closure));");
+            CODE("  push(OBJ_VAL(closure));");
 
             for (size_t i = 0; i < function->upvalueCount; i++) {
                 uint8_t isLocal = READ_BYTE();
                 uint8_t index = READ_BYTE();
                 if (isLocal) {
-                    CODE("closure->upvalues[%d] = captureUpvalue(frame->slots "
-                         "+ %u);",
-                         i, index);
-                } else {
                     CODE(
-                        "closure->upvalues[%d] = frame->closure->upvalues[%u];",
+                        "  closure->upvalues[%d] = captureUpvalue(frame->slots "
+                        "+ %u);",
                         i, index);
+                } else {
+                    CODE("   closure->upvalues[%d] = "
+                         "frame->closure->upvalues[%u];",
+                         i, index);
                 }
             }
             break;
         }
         case OP_CLOSE_UPVALUE:
-            CODE("closeUpvalues(vm->stackTop - 1);");
-            CODE("pop();");
+            CODE("  closeUpvalues(vm->stackTop - 1);");
+            CODE("  pop();");
             break;
         case OP_RETURN: {
-            CODE("Value result = pop();");
-            CODE("closeUpvalues(frame->slots);");
-            CODE("vm->frameCount--;");
-            CODE("if (vm->frameCount == 0) {");
-            CODE("  pop();");
-            CODE("  return INTERPRET_OK;");
-            CODE("}");
+            CODE("  Value result = pop();");
+            CODE("  closeUpvalues(frame->slots);");
+            CODE("  vm->frameCount--;");
+            CODE("  if (vm->frameCount == 0) {");
+            CODE("      pop();");
+            CODE("      return INTERPRET_OK;");
+            CODE("  }");
 
-            CODE("vm->stackTop = frame->slots;");
-            CODE("push(result);");
-            CODE("frame = &vm->frames[vm->frameCount - 1];");
+            CODE("  vm->stackTop = frame->slots;");
+            CODE("  push(result);");
+            CODE("  frame = &vm->frames[vm->frameCount - 1];");
             break;
         }
         case OP_CLASS:
             push(OBJ_VAL(newClass(READ_STRING())));
             break;
         case OP_INHERIT: {
-            CODE("Value superclass = peek(1);");
-            CODE("if (!IS_CLASS(superclass)) {");
-            CODE("  runtimeError(\"Superclass must be a class.\");");
-            CODE("  return INTERPRET_RUNTIME_ERROR;");
-            CODE("}");
+            CODE("  Value superclass = peek(1);");
+            CODE("  if (!IS_CLASS(superclass)) {");
+            CODE("      runtimeError(\"Superclass must be a class.\");");
+            CODE("      return INTERPRET_RUNTIME_ERROR;");
+            CODE("  }");
 
-            CODE("ObjClass *subclass = AS_CLASS(peek(0));");
-            CODE("tableAddAll(&AS_CLASS(superclass)->methods, "
+            CODE("  ObjClass *subclass = AS_CLASS(peek(0));");
+            CODE("  tableAddAll(&AS_CLASS(superclass)->methods, "
                  "&subclass->methods);");
-            CODE("pop();");
+            CODE("  pop();");
             break;
         }
         case OP_METHOD: {
             ObjString *name = READ_STRING();
-            CODE("defineMethod((OBjString *) %p);", name);
+            CODE("  defineMethod((OBjString *) %p);", name);
             break;
         }
         }
@@ -467,24 +472,24 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
     CLOSE_FUNC;
 
     free(isJmps);
-
-    printf("%s\n", &buff->buffer[strlen(LOX_HEADER)]);
-    FILE *f = fopen("test.log", "w+");
+#ifdef DEBUG_PRINT_CODE
+    FILE *f = fopen(name, "w+");
     fprintf(f, "%s\n", buff->buffer);
     fclose(f);
+#endif
 }
 
-void jitCompile(VM *vm, ObjClosure *closure) {
+void jitCompile(VM *vm, ObjClosure *closure, int argCount) {
     MIR_context_t ctx = vm->mirContext;
     c2mir_init(ctx);
     MIR_gen_init(ctx, 2);
     JitBuffer buff;
-    initBuffer(vm, &buff, strlen(LOX_HEADER) + 4096);
+    initBuffer(&buff, strlen(LOX_HEADER) + 4096);
 
     char name[32];
 
     snprintf(name, sizeof(name), "jit_func_%ld", ++vm->mirOptions.module_num);
-    codeGenerate(vm, &buff, closure, name);
+    codeGenerate(vm, &buff, closure, name, argCount);
 
     if (!c2mir_compile(ctx, &vm->mirOptions, jit_getc, &buff, name, NULL)) {
         runtimeError("jit compiler error!");
@@ -523,6 +528,8 @@ CLEANUP:
 }
 
 static const char LOX_HEADER[] = {
+    "#ifdef __MIRC__\n"
+    "#endif\n"
     "#define FRAMES_MAX 64\n"
     "#define STACK_MAX (FRAMES_MAX * 256)\n"
     "#define TAG_NIL 1\n"
@@ -530,17 +537,20 @@ static const char LOX_HEADER[] = {
     "#define TAG_TRUE  3\n"
     "typedef char bool;\n"
     "typedef unsigned long int uint64_t;\n"
-    "typedef unsigned long int	uintptr_t;\n"
+    "typedef unsigned long int uintptr_t;\n"
     "typedef uint64_t Value;\n"
     "typedef unsigned char uint8_t;\n"
     "typedef unsigned int uint32_t;\n"
-    "typedef long long size_t;\n"
+    "typedef unsigned long long size_t;\n"
     "#define SIGN_BIT ((uint64_t)0x8000000000000000)\n"
     "#define QNAN     ((uint64_t)0x7ffc000000000000)\n"
     "#define OBJ_VAL(obj)    (Value)(SIGN_BIT | QNAN | "
     "(uint64_t)(uintptr_t)(obj))\n"
     "#define NIL_VAL         ((Value)(uint64_t)(QNAN | TAG_NIL))\n"
+    "#define true 1\n"
+    "#define false 0\n"
     "\n"
+
     "typedef enum {\n"
     "   OBJ_BOUND_METHOD,\n"
     "   OBJ_CLASS,\n"
@@ -642,4 +652,14 @@ static const char LOX_HEADER[] = {
     "   int grayCapacity;\n"
     "   Obj** grayStack;\n"
     "} VM;\n"
+    "\n"
+    "Value pop();\n"
+    "void push(Value);\n"
+    "Value peek(int distance);\n"
+    "void runtimeError(const char *, ...);\n"
+    "bool tableGet(Table *, ObjString *, Value *);\n"
+    "bool tableSet(Table *, ObjString *, Value);\n"
+    "void closeUpvalues(Value *);\n"
+    "ObjClosure *newClosure(ObjFunction *);\n"
+    "bool callValue(Value, int);\n"
     "\n"};

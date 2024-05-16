@@ -28,6 +28,21 @@
         "memory": "c",
         "numeric": "c",
         "cmath": "c",
-        "common.h": "c"
+        "common.h": "c",
+        "atomic": "c",
+        "chrono": "c",
+        "deque": "c",
+        "string": "c",
+        "unordered_map": "c",
+        "string_view": "c",
+        "algorithm": "c",
+        "random": "c",
+        "fstream": "c",
+        "limits": "c",
+        "mutex": "c",
+        "sstream": "c",
+        "streambuf": "c",
+        "jit_func_1": "c",
+        "jit_func_2": "c"
     },
 }

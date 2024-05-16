@@ -9,6 +9,6 @@
 
 
 
-void jitCompile(VM *vm, ObjClosure *closure);
+void jitCompile(VM *vm, ObjClosure *closure, int argCount);
 
 #endif
