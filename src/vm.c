@@ -127,10 +127,10 @@ static bool call(ObjClosure *closure, int argCount) {
 
 #ifdef OPEN_JIT
     if (closure->jitFunction != NULL) {
-        return closure->jitFunction(&vm, closure);
+        return !closure->jitFunction(&vm, closure);
     } else {
         jitCompile(&vm, closure, argCount);
-        return closure->jitFunction(&vm, closure);
+        return !closure->jitFunction(&vm, closure);
     }
 #else
     CallFrame *frame = &vm.frames[vm.frameCount++];
@@ -268,12 +268,12 @@ static void defineMethod(ObjString *name) {
 }
 
 // 是否为false 只要不为空或者布尔false都是true
-static bool isFalsey(Value value) {
+bool isFalsey(Value value) {
     return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
 }
 
 // 连接字符串
-static void concatenate() {
+void concatenate() {
     ObjString *b = AS_STRING(peek(0));
     ObjString *a = AS_STRING(peek(1));
 
@@ -608,7 +608,7 @@ InterpretResult interpret(const char *source) {
     push(OBJ_VAL(closure));
 
 #ifdef OPEN_JIT
-    return call(closure, 0);
+    return call(closure, 0) ? INTERPRET_OK : INTERPRET_RUNTIME_ERROR;
 #else
     call(closure, 0);
     return run();

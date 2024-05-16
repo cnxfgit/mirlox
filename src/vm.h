@@ -87,4 +87,8 @@ bool invoke(ObjString *name, int argCount);
 
 void closeUpvalues(Value *last);
 
+bool isFalsey(Value value);
+
+void concatenate();
+
 #endif

@@ -2,9 +2,17 @@ CC = gcc
 CFLAGS = -g -I../mir/ -I../mir/c2mir -L../mir/ 
 LIBS = -lmir -lpthread
 
+ifeq ($(MAKECMDGOALS), nojit)
+    CFLAGS += -UOPEN_JIT
+endif
+
 all: main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o value.o vm.o jit.o
 	$(CC) ${CFLAGS} main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o 	\
 	value.o vm.o jit.o -o lox $(LIBS)
+
+nojit: main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o value.o vm.o
+	$(CC) ${CFLAGS} main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o 	\
+	value.o vm.o -o lox $(LIBS)
 
 main.o: common.h main.c chunk.h vm.h
 	$(CC) ${CFLAGS} -c main.c -o main.o 

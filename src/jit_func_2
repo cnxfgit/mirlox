@@ -148,93 +148,76 @@ void printValue(Value value);
 int printf (const char *__restrict __fmt, ...);
 
 
-int jit_func_1 (VM *vm, ObjClosure* _closure) {
+int jit_func_2 (VM *vm, ObjClosure* _closure) {
   CallFrame *frame = &vm->frames[vm->frameCount++];
   frame->closure = _closure;
   frame->ip = _closure->function->chunk.code;
-  frame->slots = vm->stackTop - 0 - 1;
+  frame->slots = vm->stackTop - 1 - 1;
   ObjString *name;
   Value constant,value,result;
   uint8_t slot;
   double a,b;
-  ObjClosure *closure = newClosure((ObjFunction *) 0x55a3eeaa8db0);
-  push(OBJ_VAL(closure));
-  name = (ObjString *)0x55a3eeaa8d30;
-  tableSet(&vm->globals, name, peek(0));
-  pop();
-  name = (ObjString *)0x55a3eeaa8d30;
-  if (!tableGet(&vm->globals, name, &value)) {
-      runtimeError("Undefined variable '%s'.", name->chars);
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  push(value);
   constant = 4607182418800017408UL;
   push(constant);
-  if (!callValue(peek(1), 1)) {
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  frame = &vm->frames[vm->frameCount - 1];
-  pop();
-  name = (ObjString *)0x55a3eeaa8a00;
-  if (!tableGet(&vm->globals, name, &value)) {
-      runtimeError("Undefined variable '%s'.", name->chars);
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  push(value);
-  if (!callValue(peek(0), 0)) {
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  frame = &vm->frames[vm->frameCount - 1];
-  name = (ObjString *)0x55a3eeaa8ec0;
-  tableSet(&vm->globals, name, peek(0));
-  pop();
-  name = (ObjString *)0x55a3eeaa8d30;
-  if (!tableGet(&vm->globals, name, &value)) {
-      runtimeError("Undefined variable '%s'.", name->chars);
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  push(value);
-  constant = 4696837146684686336UL;
+  constant = 0UL;
   push(constant);
-  if (!callValue(peek(1), 1)) {
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  frame = &vm->frames[vm->frameCount - 1];
-  pop();
-  name = (ObjString *)0x55a3eeaa8a00;
-  if (!tableGet(&vm->globals, name, &value)) {
-      runtimeError("Undefined variable '%s'.", name->chars);
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  push(value);
-  if (!callValue(peek(0), 0)) {
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  frame = &vm->frames[vm->frameCount - 1];
-  name = (ObjString *)0x55a3eeaa9620;
-  tableSet(&vm->globals, name, peek(0));
-  pop();
-  name = (ObjString *)0x55a3eeaa9620;
-  if (!tableGet(&vm->globals, name, &value)) {
-      runtimeError("Undefined variable '%s'.", name->chars);
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  push(value);
-  name = (ObjString *)0x55a3eeaa8ec0;
-  if (!tableGet(&vm->globals, name, &value)) {
-      runtimeError("Undefined variable '%s'.", name->chars);
-      return INTERPRET_RUNTIME_ERROR;
-  }
-  push(value);
+Label_4:
+  slot = 3;
+  push(frame->slots[slot]);
+  slot = 1;
+  push(frame->slots[slot]);
   if (!IS_NUMBER(peek(0)) || !IS_NUMBER(peek(1))) {
       runtimeError("Operands must be numbers.");
       return INTERPRET_RUNTIME_ERROR; 
   }
   b = AS_NUMBER(pop());
   a = AS_NUMBER(pop());
-  push(NUMBER_VAL(a - b)); 
-  printValue(pop());
-  printf("\n");
+  push(BOOL_VAL(a < b)); 
+  if (isFalsey(peek(0)))
+      goto Label_38;
+  pop();
+  goto Label_27;
+Label_16:
+  slot = 3;
+  push(frame->slots[slot]);
+  constant = 4607182418800017408UL;
+  push(constant);
+  if (IS_STRING(peek(0)) && IS_STRING(peek(1))) {
+      concatenate();
+  } else if (IS_NUMBER(peek(0)) && IS_NUMBER(peek(1))) {
+      double b = AS_NUMBER(pop());
+      double a = AS_NUMBER(pop());
+      push(NUMBER_VAL(a + b));
+  } else {
+      runtimeError("Operands must be two numbers or two strings.");
+      return INTERPRET_RUNTIME_ERROR;
+  }
+  slot = 3;
+  frame->slots[slot] = peek(0);
+  pop();
+  goto Label_4;
+Label_27:
+  slot = 2;
+  push(frame->slots[slot]);
+  slot = 3;
+  push(frame->slots[slot]);
+  if (IS_STRING(peek(0)) && IS_STRING(peek(1))) {
+      concatenate();
+  } else if (IS_NUMBER(peek(0)) && IS_NUMBER(peek(1))) {
+      double b = AS_NUMBER(pop());
+      double a = AS_NUMBER(pop());
+      push(NUMBER_VAL(a + b));
+  } else {
+      runtimeError("Operands must be two numbers or two strings.");
+      return INTERPRET_RUNTIME_ERROR;
+  }
+  slot = 2;
+  frame->slots[slot] = peek(0);
+  pop();
+  goto Label_16;
+Label_38:
+  pop();
+  pop();
   push(NIL_VAL);
   result = pop();
   closeUpvalues(frame->slots);
@@ -247,7 +230,7 @@ int jit_func_1 (VM *vm, ObjClosure* _closure) {
   push(result);
   frame = &vm->frames[vm->frameCount - 1];
   return INTERPRET_OK;
-  constant = 18445712336374893872UL;
+  constant = 4607182418800017408UL;
   push(constant);
   return INTERPRET_OK;
 }

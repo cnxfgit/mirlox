@@ -25,6 +25,11 @@ static LoxFunction LoxFunctions[] = {
     {"closeUpvalues", closeUpvalues},
     {"printf", printf},
     {"printValue", printValue},
+    {"isFalsey", isFalsey},
+    {"concatenate", concatenate},
+    {"numToValue", numToValue},
+    {"valueToNum", valueToNum},
+    {"isObjType", isObjType},
     {NULL, NULL},
 };
 
@@ -112,6 +117,9 @@ static int jit_getc(void *data) {
         CODE("  frame->slots = vm->stackTop - %d - 1;", argCount);             \
                                                                                \
         CODE("  ObjString *name;");                                            \
+        CODE("  Value constant,value,result;");                                \
+        CODE("  uint8_t slot;");                                               \
+        CODE("  double a,b;");                                                 \
     } while (0)
 
 #define CLOSE_FUNC                                                             \
@@ -121,22 +129,21 @@ static int jit_getc(void *data) {
     } while (0)
 
 static void setJmps(ObjClosure *closure, uint8_t *isJmps) {
-    uint8_t instruction;
     uint8_t *code = closure->function->chunk.code;
     for (int pc = 0; pc < closure->function->chunk.count; pc++) {
-        instruction = code[pc];
+        uint8_t instruction = code[pc];
         switch (instruction) {
         case OP_JUMP:
         case OP_JUMP_IF_FALSE: {
+            uint16_t offset = (uint16_t)((code[pc + 1] << 8) | code[pc + 2]);
             pc += 2;
-            uint16_t offset = (uint16_t)((code[pc - 2] << 8) | code[pc - 1]);
-            isJmps[pc + offset] = 1;
+            isJmps[pc + offset + 1] = 1;
             break;
         }
         case OP_LOOP: {
+            uint16_t offset = (uint16_t)((code[pc + 1] << 8) | code[pc + 2]);
             pc += 2;
-            uint16_t offset = (uint16_t)((code[pc - 2] << 8) | code[pc - 1]);
-            isJmps[pc - offset] = 1;
+            isJmps[pc - offset + 1] = 1;
             break;
         }
         default:
@@ -150,7 +157,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
     strTobuffer(buff, LOX_HEADER);
     int codeCount = closure->function->chunk.count;
     uint8_t *isJmps = malloc(codeCount * sizeof(uint8_t));
-    memset(isJmps, 0, codeCount * sizeof(isJmps[0]));
+    memset(isJmps, 0, codeCount * sizeof(uint8_t));
     OPEN_FUNC(name);
 
     setJmps(closure, isJmps);
@@ -173,15 +180,16 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
         CODE("      runtimeError(\"Operands must be numbers.\");");            \
         CODE("      return INTERPRET_RUNTIME_ERROR; ");                        \
         CODE("  }");                                                           \
-        CODE("  double b = AS_NUMBER(pop());");                                \
-        CODE("  double a = AS_NUMBER(pop());");                                \
+        CODE("  b = AS_NUMBER(pop());");                                       \
+        CODE("  a = AS_NUMBER(pop());");                                       \
         CODE("  push(%s(a %s b)); ", valueType, op);                           \
     } while (false)
 
-    int pc = frame->ip - closure->function->chunk.code;
+    int pc = 0;
     while (pc < codeCount) {
-        uint8_t instruction = READ_BYTE();
         pc = frame->ip - closure->function->chunk.code;
+        uint8_t instruction = READ_BYTE();
+
         if (pc < codeCount && isJmps[pc]) {
             CODE("Label_%d:", pc);
         }
@@ -189,7 +197,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
         switch (instruction) {
         case OP_CONSTANT: {
             Value value = READ_CONSTANT();
-            CODE("  Value constant = %luUL;", value);
+            CODE("  constant = %luUL;", value);
             CODE("  push(constant);");
             break;
         }
@@ -207,19 +215,18 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             break;
         case OP_GET_LOCAL: {
             Value value = READ_BYTE();
-            CODE("  uint8_t slot = %u;", (uint8_t)value);
+            CODE("  slot = %u;", (uint8_t)value);
             CODE("  push(frame->slots[slot]);");
             break;
         }
         case OP_SET_LOCAL: {
             Value value = READ_BYTE();
-            CODE("  uint8_t slot = %u;", (uint8_t)value);
+            CODE("  slot = %u;", (uint8_t)value);
             CODE("  frame->slots[slot] = peek(0);");
             break;
         }
         case OP_GET_GLOBAL: {
             ObjString *name = READ_STRING();
-            CODE("  Value value;");
             CODE("  name = (ObjString *)%p;", name);
             CODE("  if (!tableGet(&vm->globals, name, &value)) {");
             CODE("      runtimeError(\"Undefined variable '%%s'.\", "
@@ -249,13 +256,13 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
         }
         case OP_GET_UPVALUE: {
             Value value = READ_BYTE();
-            CODE("  uint8_t slot = %u;", (uint8_t)value);
+            CODE("  slot = %u;", (uint8_t)value);
             CODE("  push(*frame->closure->upvalues[slot]->location);");
             break;
         }
         case OP_SET_UPVALUE: {
             Value value = READ_BYTE();
-            CODE("  uint8_t slot = %u;", (uint8_t)value);
+            CODE("  slot = %u;", (uint8_t)value);
             CODE("  *frame->closure->upvalues[slot]->location = peek(0);");
             break;
         }
@@ -269,7 +276,6 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             ObjString *name = READ_STRING();
             CODE("  name = (ObjString *)%p;", name);
 
-            CODE("  Value value;");
             CODE("  if (tableGet(&instance->fields, name, &value)) {");
             CODE("      pop();");
             CODE("      push(value);");
@@ -290,7 +296,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             ObjString *name = READ_STRING();
             CODE("  tableSet(&instance->fields, (ObjString *)%p, peek(0));",
                  name);
-            CODE("  Value value = pop();");
+            CODE("  value = pop();");
             CODE("  pop();");
             CODE("  push(value);");
             break;
@@ -357,18 +363,18 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
         }
         case OP_JUMP: {
             uint16_t offset = READ_SHORT();
-            CODE("  goto Label_%d;", pc + offset);
+            CODE("  goto Label_%d;", pc + offset + 3);
             break;
         }
         case OP_JUMP_IF_FALSE: {
             uint16_t offset = READ_SHORT();
             CODE("  if (isFalsey(peek(0)))");
-            CODE("      goto Label_%d;", pc + offset);
+            CODE("      goto Label_%d;", pc + offset + 3);
             break;
         }
         case OP_LOOP: {
             uint16_t offset = READ_SHORT();
-            CODE("  goto Label_%d;", pc - offset);
+            CODE("  goto Label_%d;", pc - offset + 3);
             break;
         }
         case OP_CALL: {
@@ -426,7 +432,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             CODE("  pop();");
             break;
         case OP_RETURN: {
-            CODE("  Value result = pop();");
+            CODE("  result = pop();");
             CODE("  closeUpvalues(frame->slots);");
             CODE("  vm->frameCount--;");
             CODE("  if (vm->frameCount == 0) {");
@@ -437,6 +443,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             CODE("  vm->stackTop = frame->slots;");
             CODE("  push(result);");
             CODE("  frame = &vm->frames[vm->frameCount - 1];");
+            CODE("  return INTERPRET_OK;");
             break;
         }
         case OP_CLASS:
@@ -547,6 +554,17 @@ static const char LOX_HEADER[] = {
     "#define OBJ_VAL(obj)    (Value)(SIGN_BIT | QNAN | "
     "(uint64_t)(uintptr_t)(obj))\n"
     "#define NIL_VAL         ((Value)(uint64_t)(QNAN | TAG_NIL))\n"
+    "#define BOOL_VAL(b)     ((b) ? TRUE_VAL : FALSE_VAL)\n"
+    "#define FALSE_VAL       ((Value)(uint64_t)(QNAN | TAG_FALSE))\n"
+    "#define TRUE_VAL        ((Value)(uint64_t)(QNAN | TAG_TRUE))\n"
+    "#define NUMBER_VAL(num) numToValue(num)\n"
+    "#define AS_NUMBER(value)    valueToNum(value)\n"
+    "#define AS_OBJ(value)       ((Obj*)(uintptr_t)((value) & ~(SIGN_BIT | "
+    "QNAN)))\n"
+    "#define IS_NUMBER(value)    (((value) & QNAN) != QNAN)\n"
+    "#define IS_STRING(value) isObjType(value, OBJ_STRING)\n"
+    "#define IS_OBJ(value)       (((value) & (QNAN | SIGN_BIT)) == (QNAN | "
+    "SIGN_BIT))\n"
     "#define true 1\n"
     "#define false 0\n"
     "\n"
@@ -662,4 +680,11 @@ static const char LOX_HEADER[] = {
     "void closeUpvalues(Value *);\n"
     "ObjClosure *newClosure(ObjFunction *);\n"
     "bool callValue(Value, int);\n"
+    "bool isFalsey(Value);\n"
+    "void concatenate();\n"
+    "double valueToNum(Value);\n"
+    "Value numToValue(double);\n"
+    "bool isObjType(Value, ObjType);\n"
+    "void printValue(Value value);\n"
+    "int printf (const char *__restrict __fmt, ...);\n"
     "\n"};
