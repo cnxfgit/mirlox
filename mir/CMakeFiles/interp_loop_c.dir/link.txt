@@ -1,1 +1,0 @@
-/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/interp_loop_c.dir/mir-tests/loop-interp.c.o  -o interp_loop_c  -lpthread libmir.a -lpthread 

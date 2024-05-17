@@ -1,5 +1,5 @@
 /* This file is a part of MIR project.
-   Copyright (C) 2018-2021 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+   Copyright (C) 2018-2023 Vladimir Makarov <vmakarov.gcc@gmail.com>.
    x86_64 ABI target specific code.
 */
 
@@ -35,8 +35,8 @@ static MIR_type_t get_result_type (MIR_type_t arg_type1, MIR_type_t arg_type2) {
 
 static int classify_arg (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[MAX_QWORDS],
                          int bit_field_p) {
-  size_t size = type_size (c2m_ctx, type);
-  int i, n_el_qwords, n_qwords = (size + 7) / 8;
+  size_t size = type_size (c2m_ctx, type), n_qwords = (size + 7) / 8;
+  int i, n_el_qwords;
   MIR_type_t mir_type;
 
   if (type->mode == TM_STRUCT || type->mode == TM_UNION || type->mode == TM_ARR) {
@@ -62,8 +62,16 @@ static int classify_arg (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[
            el = NL_NEXT (el))
         if (el->code == N_MEMBER) {
           decl_t decl = el->attr;
-          int start_qword = decl->offset / 8;
-          int end_qword = (decl->offset + type_size (c2m_ctx, decl->decl_spec.type) - 1) / 8;
+          mir_size_t offset = decl->offset;
+          node_t container;
+          if ((container = decl->containing_unnamed_anon_struct_union_member) != NULL) {
+            decl_t decl2 = container->attr;
+            assert (decl2->decl_spec.type->mode == TM_STRUCT
+                    || decl2->decl_spec.type->mode == TM_UNION);
+            offset -= decl2->offset;
+          }
+          int start_qword = offset / 8;
+          int end_qword = (offset + type_size (c2m_ctx, decl->decl_spec.type) - 1) / 8;
           int span_qwords = end_qword - start_qword + 1;
 
           if (decl->bit_offset >= 0) {
@@ -268,7 +276,7 @@ static void target_add_ret_ops (c2m_ctx_t c2m_ctx, struct type *ret_type, op_t r
   MIR_insn_t insn;
   MIR_reg_t ret_addr_reg;
   op_t temp, var;
-  int i, size, n_qwords;
+  int i, n_qwords;
 
   if (void_type_p (ret_type)) return;
   n_qwords = process_ret_type (c2m_ctx, ret_type, qword_types);
@@ -288,8 +296,7 @@ static void target_add_ret_ops (c2m_ctx_t c2m_ctx, struct type *ret_type, op_t r
   } else {
     ret_addr_reg = MIR_reg (ctx, RET_ADDR_NAME, curr_func->u.func);
     var = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_I8, 0, ret_addr_reg, 0, 1));
-    size = type_size (c2m_ctx, ret_type);
-    block_move (c2m_ctx, var, res, size);
+    block_move (c2m_ctx, var, res, type_size (c2m_ctx, ret_type));
   }
 }
 

@@ -157,12 +157,12 @@ int jit_func_1 (VM *vm, ObjClosure* _closure) {
   Value constant,value,result;
   uint8_t slot;
   double a,b;
-  ObjClosure *closure = newClosure((ObjFunction *) 0x55a3eeaa8db0);
+  ObjClosure *closure = newClosure((ObjFunction *) 0x558048e90db0);
   push(OBJ_VAL(closure));
-  name = (ObjString *)0x55a3eeaa8d30;
+  name = (ObjString *)0x558048e90d30;
   tableSet(&vm->globals, name, peek(0));
   pop();
-  name = (ObjString *)0x55a3eeaa8d30;
+  name = (ObjString *)0x558048e90d30;
   if (!tableGet(&vm->globals, name, &value)) {
       runtimeError("Undefined variable '%s'.", name->chars);
       return INTERPRET_RUNTIME_ERROR;
@@ -175,7 +175,7 @@ int jit_func_1 (VM *vm, ObjClosure* _closure) {
   }
   frame = &vm->frames[vm->frameCount - 1];
   pop();
-  name = (ObjString *)0x55a3eeaa8a00;
+  name = (ObjString *)0x558048e90a00;
   if (!tableGet(&vm->globals, name, &value)) {
       runtimeError("Undefined variable '%s'.", name->chars);
       return INTERPRET_RUNTIME_ERROR;
@@ -185,23 +185,23 @@ int jit_func_1 (VM *vm, ObjClosure* _closure) {
       return INTERPRET_RUNTIME_ERROR;
   }
   frame = &vm->frames[vm->frameCount - 1];
-  name = (ObjString *)0x55a3eeaa8ec0;
+  name = (ObjString *)0x558048e90ef0;
   tableSet(&vm->globals, name, peek(0));
   pop();
-  name = (ObjString *)0x55a3eeaa8d30;
+  name = (ObjString *)0x558048e90d30;
   if (!tableGet(&vm->globals, name, &value)) {
       runtimeError("Undefined variable '%s'.", name->chars);
       return INTERPRET_RUNTIME_ERROR;
   }
   push(value);
-  constant = 4696837146684686336UL;
+  constant = 4630122629401935872UL;
   push(constant);
   if (!callValue(peek(1), 1)) {
       return INTERPRET_RUNTIME_ERROR;
   }
   frame = &vm->frames[vm->frameCount - 1];
   pop();
-  name = (ObjString *)0x55a3eeaa8a00;
+  name = (ObjString *)0x558048e90a00;
   if (!tableGet(&vm->globals, name, &value)) {
       runtimeError("Undefined variable '%s'.", name->chars);
       return INTERPRET_RUNTIME_ERROR;
@@ -211,16 +211,16 @@ int jit_func_1 (VM *vm, ObjClosure* _closure) {
       return INTERPRET_RUNTIME_ERROR;
   }
   frame = &vm->frames[vm->frameCount - 1];
-  name = (ObjString *)0x55a3eeaa9620;
+  name = (ObjString *)0x558048e90e20;
   tableSet(&vm->globals, name, peek(0));
   pop();
-  name = (ObjString *)0x55a3eeaa9620;
+  name = (ObjString *)0x558048e90e20;
   if (!tableGet(&vm->globals, name, &value)) {
       runtimeError("Undefined variable '%s'.", name->chars);
       return INTERPRET_RUNTIME_ERROR;
   }
   push(value);
-  name = (ObjString *)0x55a3eeaa8ec0;
+  name = (ObjString *)0x558048e90ef0;
   if (!tableGet(&vm->globals, name, &value)) {
       runtimeError("Undefined variable '%s'.", name->chars);
       return INTERPRET_RUNTIME_ERROR;
@@ -247,7 +247,7 @@ int jit_func_1 (VM *vm, ObjClosure* _closure) {
   push(result);
   frame = &vm->frames[vm->frameCount - 1];
   return INTERPRET_OK;
-  constant = 18445712336374893872UL;
+  constant = 18445712183270116656UL;
   push(constant);
   return INTERPRET_OK;
 }

@@ -1,5 +1,5 @@
 /* This file is a part of MIR project.
-   Copyright (C) 2018-2021 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+   Copyright (C) 2018-2023 Vladimir Makarov <vmakarov.gcc@gmail.com>.
    aarch64 call ABI target specific code.
 */
 
@@ -13,16 +13,15 @@ static int target_return_by_addr_p (c2m_ctx_t c2m_ctx, struct type *ret_type) {
 }
 
 static int reg_aggregate_size (c2m_ctx_t c2m_ctx, struct type *type) {
-  int size;
+  size_t size;
 
   if (type->mode != TM_STRUCT && type->mode != TM_UNION) return -1;
-  return (size = type_size (c2m_ctx, type)) <= 2 * 8 ? size : -1;
+  return (size = type_size (c2m_ctx, type)) <= 2 * 8 ? (int) size : -1;
 }
 
 static void target_add_res_proto (c2m_ctx_t c2m_ctx, struct type *ret_type,
                                   target_arg_info_t *arg_info, VARR (MIR_type_t) * res_types,
                                   VARR (MIR_var_t) * arg_vars) {
-  MIR_var_t var;
   int size;
 
   if ((size = reg_aggregate_size (c2m_ctx, ret_type)) < 0) {

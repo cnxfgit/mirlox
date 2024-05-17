@@ -1,1 +1,0 @@
-/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/m2b.dir/mir-utils/m2b.c.o  -o m2b  -lpthread libmir.a -lpthread 

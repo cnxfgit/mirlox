@@ -1,5 +1,5 @@
 /* This file is a part of MIR project.
-   Copyright (C) 2019-2021 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+   Copyright (C) 2019-2023 Vladimir Makarov <vmakarov.gcc@gmail.com>.
 */
 
 /* See C11 7.19 */
@@ -15,12 +15,10 @@ static char stddef_str[]
     "typedef unsigned long size_t;\n"
 #endif
     "typedef long double max_align_t;\n"
-#if defined(__APPLE__)
-    "typedef int wchar_t;\n"
-#elif defined(_WIN32)
+#if defined(_WIN32)
     "typedef unsigned short wchar_t;\n"
 #else
-    "typedef unsigned int wchar_t;\n"
+    "typedef int wchar_t;\n"
 #endif
     "\n"
 #if !defined(__APPLE__) && !defined(_WIN32)

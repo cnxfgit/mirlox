@@ -1,5 +1,5 @@
 /* This file is a part of MIR project.
-   Copyright (C) 2018-2021 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+   Copyright (C) 2018-2023 Vladimir Makarov <vmakarov.gcc@gmail.com>.
    s390x call ABI target specific code.
 */
 
@@ -82,7 +82,6 @@ static int target_gen_gather_arg (c2m_ctx_t c2m_ctx, const char *name, struct ty
                                   decl_t param_decl, target_arg_info_t *arg_info) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_context_t ctx = c2m_ctx->ctx;
-  MIR_type_t type;
   MIR_op_t param_op;
   reg_var_t reg_var;
 

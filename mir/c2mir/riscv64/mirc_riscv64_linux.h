@@ -1,5 +1,5 @@
 /* This file is a part of MIR project.
-   Copyright (C) 2020-2021 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+   Copyright (C) 2020-2023 Vladimir Makarov <vmakarov.gcc@gmail.com>.
 */
 
 static char riscv64_mirc[]
@@ -59,6 +59,8 @@ static char riscv64_mirc[]
     "#define __UINT16_MAX__ (__INT16_MAX__ * 2u + 1u)\n"
     "#define __UINT32_MAX__ (__INT32_MAX__ * 2u + 1u)\n"
     "#define __UINT64_MAX__ (__INT64_MAX__ * 2u + 1u)\n"
+    "#define __WCHAR_MAX__ 0x7fffffff\n"
+    "#define __WCHAR_MIN__ (-__WCHAR_MAX__ - 1)\n"
     "#define __SCHAR_MAX__ __INT8_MAX__\n"
     "#define __SHRT_MAX__ __INT16_MAX__\n"
     "#define __INT_MAX__ __INT32_MAX__\n"
@@ -107,5 +109,12 @@ static char riscv64_mirc[]
     "#define linux 1\n"
     "#define __unix 1\n"
     "#define __unix__ 1\n"
+#ifndef __GNU_LIBRARY__
+    "typedef struct {\n"
+    "  void *arg_area;\n"
+    "} __builtin_va_list;\n"
+    "typedef __builtin_va_list va_list;\n"
+    "#define __DEFINED_va_list\n"
+#endif
     "\n"
     "void *alloca (unsigned long);\n";

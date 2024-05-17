@@ -5,7 +5,9 @@ cmake_minimum_required (VERSION 3.8)
 
 project ("MIR")
 
-set(CMAKE_BUILD_TYPE "RelWithDebInfo")
+if(NOT DEFINED CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE "RelWithDebInfo")
+endif()
 
 #set(CMAKE_VERBOSE_MAKEFILE ON)
 
@@ -14,7 +16,7 @@ if(NOT WIN32)
     $<$<CONFIG:RELEASE>:-O3>
     $<$<CONFIG:RelWithDebInfo>:-O3>
   )
-  add_compile_options(-std=gnu11 -Wno-abi -fsigned-char)
+  add_compile_options(-std=gnu11 -Wno-abi -fsigned-char -fPIC)
 endif()
 
 include(CheckCCompilerFlag)
@@ -39,17 +41,33 @@ message("C compiler flags: ${CMAKE_C_FLAGS}")
 option(BUILD_TESTING "" ON)
 include(CTest)
 
-# ------------------ LIBMIR -----------------------
-add_library(mir STATIC mir.c mir-gen.c c2mir/c2mir.c mir.h mir-gen.h c2mir/c2mir.h)
+add_library(mir OBJECT mir.c mir-gen.c c2mir/c2mir.c mir.h mir-gen.h c2mir/c2mir.h)
 target_include_directories(mir PRIVATE ${PROJECT_SOURCE_DIR})
 if(Threads_FOUND)
   target_compile_definitions(mir PUBLIC "MIR_PARALLEL_GEN")
 endif()
 
+# ------------------ LIBMIR -----------------------
+add_library(mir_static STATIC)
+target_link_libraries(mir_static PRIVATE mir)
+
+# ------------------ LIBMIR SO --------------------
+add_library(mir_shared SHARED)
+if(WIN32)
+  set_target_properties(mir_shared PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
+endif()
+target_link_libraries(mir_shared PRIVATE mir)
+
 # ------------------ C2M --------------------------
 add_executable (c2m "c2mir/c2mir-driver.c")
 target_include_directories(c2m PRIVATE ${PROJECT_SOURCE_DIR})
 target_link_libraries(c2m mir ${CMAKE_DL_LIBS} )
+
+# ---------------- MIR BIN RUN --------------------
+
+add_executable (mir-bin-run "mir-bin-run.c")
+target_include_directories (mir-bin-run PRIVATE ${PROJECT_SOURCE_DIR})
+target_link_libraries(mir-bin-run mir ${CMAKE_DL_LIBS} )
 
 # ------------------ MIR utils --------------------
 add_executable (m2b "mir-utils/m2b.c")

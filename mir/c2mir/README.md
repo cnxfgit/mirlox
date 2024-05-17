@@ -1,6 +1,14 @@
 # C to MIR compiler
   * Implementation of a small C11 (2011 ANSI C standard) to MIR compiler
-    * no optional features: variable size arrays, complex, atomic
+    * no optional standard features: variable size arrays, complex, atomic
+    * support of the following C extensions:
+      * `\e` escape sequence
+      * binary numbers starting with `0b` or `0B` prefix
+      * macro `__has_include`
+      * empty structure, unions, and initializer list
+      * range cases `case <start>...<finish>`
+      * zero size arrays
+      * statement expressions
   * Minimal compiler code dependency.  No additional tools (like yacc/flex) are used
   * Simplicity of implementation over speed to make code easy to learn and maintain
     * Four passes to divide compilation on manageable sub-tasks:
@@ -71,12 +79,14 @@
   * Option `-fpreprocessed` means skipping preprocessor for C files
   * Option `-fsyntax-only` means stopping after parsing and semantic
     checking of C files without MIR code generation
+  * Option `-w` means switching off reporting all warnings
   * Option `-pedantic` is used for stricter diagnostic about C
     standard conformance.  It might be useful as C2MIR implements some GCC extensions of C
   * Option `-O<n>` is used to set up MIR-generator optimization level.  The optimization levels are described
     in documentation for MIR generator API function `MIR_gen_set_optimize_level`
-  * Option `-dg` is used for debuging MIR-generator.  It results in dumping debug information
-    about MIR-generator work to `stderr`
+  * Option `-dg[<level>]` is used for debugging MIR-generator.  It results in dumping debug information
+    about MIR-generator work to `stderr` according to the debug level.  If the level is omitted,
+    it means maximal level
   * Besides C files, MIR textual files with suffix `.mir` and MIR
     binary files with suffix `.bmir` can be given on the command line.
     In this case these MIR files are read and added to generated MIR code

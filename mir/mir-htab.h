@@ -1,11 +1,15 @@
 /* This file is a part of MIR project.
-   Copyright (C) 2018-2021 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+   Copyright (C) 2018-2023 Vladimir Makarov <vmakarov.gcc@gmail.com>.
 */
 
 #ifndef MIR_HTAB_H
 #define MIR_HTAB_H
 
 #include "mir-varr.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define FALSE 0
 #define TRUE 1
@@ -241,5 +245,9 @@ DEF_VARR (htab_ind_t)
 #define HTAB_ELS_NUM(T, V) (HTAB_OP (T, els_num) (V))
 #define HTAB_COLLISIONS(T, V) (HTAB_OP (T, collisions) (V))
 #define HTAB_FOREACH_ELEM(T, V, F, A) (HTAB_OP (T, foreach_elem) (V, F, A))
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* #ifndef MIR_HTAB_H */

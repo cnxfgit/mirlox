@@ -1,1 +1,0 @@
-/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/reduce_test.dir/adt-tests/mir-reduce-test.c.o  -o reduce_test  -lpthread 

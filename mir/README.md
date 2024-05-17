@@ -1,8 +1,10 @@
 <p>
 <a href="https://github.com/vnmakarov/mir/actions?query=workflow%3AAMD64%2DLinux%2DOSX%2DWindows%2Dtest"><img alt="GitHub MIR test status" src="https://github.com/vnmakarov/mir/workflows/AMD64%2DLinux%2DOSX%2DWindows%2Dtest/badge.svg"></a>
+<a href="https://github.com/vnmakarov/mir/actions?query=workflow%3Aapple%2Daarch64%2Dtest"><img alt="GitHub MIR test status on Apple Silicon" src="https://github.com/vnmakarov/mir/workflows/apple%2Daarch64%2Dtest/badge.svg"></a>
 <a href="https://github.com/vnmakarov/mir/actions?query=workflow%3Aaarch64%2Dtest"><img alt="GitHub MIR test status on aarch64" src="https://github.com/vnmakarov/mir/workflows/aarch64%2Dtest/badge.svg"></a>
 <a href="https://github.com/vnmakarov/mir/actions?query=workflow%3Appc64le%2Dtest"><img alt="GitHub MIR test status on ppc64le" src="https://github.com/vnmakarov/mir/workflows/ppc64le%2Dtest/badge.svg"></a>
 <a href="https://github.com/vnmakarov/mir/actions?query=workflow%3As390x%2Dtest"><img alt="GitHub MIR test status on s390x" src="https://github.com/vnmakarov/mir/workflows/s390x%2Dtest/badge.svg"></a>
+<a href="https://github.com/vnmakarov/mir/actions?query=workflow%3Ariscv64%2Dtest"><img alt="GitHub MIR test status on riscv64" src="https://github.com/vnmakarov/mir/workflows/riscv64%2Dtest/badge.svg"></a>
 <a href="https://github.com/vnmakarov/mir/actions?query=workflow%3AAMD64%2DLinux%2Dbench"><img alt="GitHub MIR benchmark status" src="https://github.com/vnmakarov/mir/workflows/AMD64%2DLinux%2Dbench/badge.svg"></a>
 </p>
 
@@ -12,16 +14,17 @@
   * Plans to try MIR light-weight JIT first for CRuby or/and MRuby implementation
   * Motivations for the project can be found in [this blog post](https://developers.redhat.com/blog/2020/01/20/mir-a-lightweight-jit-compiler-project)
   * C2MIR compiler description can be found in [this blog post](https://developers.redhat.com/blog/2021/04/27/the-mir-c-interpreter-and-just-in-time-jit-compiler)
+  * Future of code specialization in MIR for dynamic language JITs can be found in [this blog post](https://developers.redhat.com/articles/2022/02/16/code-specialization-mir-lightweight-jit-compiler)
 
 ## Disclaimer
    * **This code is in initial stages of development.  It is present
      only for familiarization with the project.  There is absolutely
      no warranty that MIR will not be changed in the future and the
      code will work for any tests except ones given here and on platforms
-     other than x86_64 Linux/OSX, aarch64 Linux/OSX(Apple M1), and ppc64be/ppc64le/s390x Linux**
-  
+     other than x86_64 Linux/OSX, aarch64 Linux/OSX(Apple M1), and ppc64be/ppc64le/s390x/riscv64 Linux**
+
 ## MIR
-  * MIR is strongly typed
+  * MIR is strongly typed IR
   * MIR can represent machine 32-bit and 64-bit insns of different architectures
   * [MIR.md](https://github.com/vnmakarov/mir/blob/master/MIR.md) contains detail description of MIR and its API.
     Here is a brief MIR description:
@@ -166,7 +169,7 @@ ex100:    func v, 0
   * After linking, you can interpret functions from the modules or call machine code
     for the functions generated with MIR JIT compiler (generator).  What way the function can be executed
     is usually defined by set up interface.  How the generated code is produced (lazily on the first call or ahead of time)
-    can be also dependent on the interface 
+    can be also dependent on the interface
   * Running code from the above example could look like the following (here `m1` and `m2` are modules
     `m_sieve` and `m_e100`, `func` is function `ex100`, `sieve` is function `sieve`):
 ```c
@@ -180,6 +183,39 @@ ex100:    func v, 0
     MIR_interp (ctx, func, &result, 0); /* zero here is arguments number  */
     /* or ((void (*) (void)) func->addr) (); to call interpr. or gen. code through the interface */
 ```
+
+### Running binary MIR files on Linux through `binfmt_misc`
+
+The `mir-bin-run` binary is prepared to be used from `binfmt_misc` with the
+following line (example):
+
+```bash
+line=:mir:M::MIR::/usr/local/bin/mir-bin-run:P
+echo $line > /proc/sys/fs/binfmt_misc/register
+```
+
+> Do adapt the mir-bin-run binary path to your system, that is the default one
+
+And run with
+```bash
+c2m your-file.c -o your-file
+chmod +x your-file
+./your-file your args
+```
+
+The executable is "configurable" with environment variables:
+
+* `MIR_TYPE` sets the interface for code execution: `interp` (for interpretation),
+  `jit` (for generation) and `lazy` (for lazy generation, default);
+* `MIR_LIBS` (colon separated list) defines a list of extra libraries to load;
+* `MIR_LIB_DIRS` or `LD_LIBRARY_PATH` (colon separated list) defines an extra list
+  of directories to search the libraries on.
+
+
+> Due to the tied nature of `mir-bin-run` with `binfmt_misc`, it may be a bit weird
+> to call `mir-bin-run` directly.
+> The `P` flag on the binfmt_misc passes an extra argument with the full path
+> to the MIR binary.
 
 ## The current state of MIR project
 
@@ -206,7 +242,7 @@ ex100:    func v, 0
   * Performance minded porting MIR JIT compiler to 32-bit targets will need an implementation of
     additional small analysis pass to get info what 64-bit variables are used only
     in 32-bit instructions
-    
+
 ## MIR JIT compiler
   * Compiler **Performance Goals** relative to GCC -O2:
     * 70% of generated code speed
@@ -254,7 +290,7 @@ ex100:    func v, 0
   * **Combine** (code selection): merging data-depended insns into one
   * **Dead Code Elimination**: removing insns with unused outputs
   * **Generate Machine Insns**: run machine-dependent code creating machine insns
-  
+
 ## C to MIR translation
   * Currently work on 2 different ways of the translation are ongoing
     * Implementation of a small C11 (2011 ANSI C standard) to MIR compiler.
@@ -271,17 +307,18 @@ ex100:    func v, 0
    by hashtables
  * File `mir-interp.c` contains code for interpretation of MIR code.  It is included in `mir.c`
    and never compiled separately
- * Files `mir-gen.h`, `mir-gen.c`, `mir-gen-x86_64.c`, `mir-gen-aarch64.c`, `mir-gen-ppc64.c`,
-   and `mir-gen-s390x.c` contain code for MIR JIT compiler
-   * Files `mir-gen-x86_64.c`, `mir-gen-aarch64.c`, `mir-gen-ppc64.c`,
-   and `mir-gen-s390x.c` is machine dependent code of JIT compiler
+ * Files `mir-gen.h`, `mir-gen.c`, `mir-gen-x86_64.c`, `mir-gen-aarch64.c`, `mir-gen-ppc64.c`, `mir-gen-s390x.c`,
+   and `mir-gen-riscv.c` contain code for MIR JIT compiler
+   * Files `mir-gen-x86_64.c`, `mir-gen-aarch64.c`, `mir-gen-ppc64.c`, `mir-gen-s390x.c`,
+   and `mir-gen-riscv.c` is machine dependent code of JIT compiler
  * Files `mir-<target>.c` contain simple machine dependent code common for interpreter and
-   JIT compiler 
+   JIT compiler
  * Files `mir2c/mir2c.h` and `mir2c/mir2c.c` contain code for MIR to C compiler
  * Files `c2mir/c2mir.h`, `c2mir/c2mir.c`, `c2mir/c2mir-driver.c`, and `c2mir/mirc.h` contain code for
-   C to MIR compiler.  Files in directories `c2mir/x86_64` and `c2mir/aarch64`, `c2mir/ppc64` and `c2mir/s390x`
-   contain correspondingly x86_64, aarch64, ppc64, and s390x machine-dependent code for C to MIR compiler
-   
+   C to MIR compiler.  Files in directories `c2mir/x86_64` and `c2mir/aarch64`, `c2mir/ppc64`, `c2mir/s390x`,
+   and `c2mir/riscv` contain correspondingly x86_64, aarch64, ppc64, s390x, and riscv machine-dependent
+   code for C to MIR compiler
+
 ## Playing with current MIR project code
   * MIR project is far away from any serious usage
   * The current code can be used only to familiarize future users with the project
@@ -297,9 +334,9 @@ ex100:    func v, 0
     | compilation [1]| **1.0** (69us)   | 0.17 (12us)     | **193** (13.35ms)|  186 (12.8ms)   |
     | compilation [2]| **1.0** (116us)  | 0.10 (12us)     | **115** (13.35ms)|  110 (12.8ms)   |
     | execution [3]  | **1.0** (3.05s)  | 6.0 (18.3s)     | **0.95** (2.9s)  |  2.08 (6.34s)   |
-    | code size [4]  | **1.0** (325KB)  | 0.51 (165KB)    | **76** (25.2MB)  |  76 (25.2MB)   |
+    | code size [4]  | **1.0** (408KB)  | 0.51 (209KB)    | **62** (25.2MB)  |  62 (25.2MB)   |
     | startup [5]    | **1.0** (1.3us)  | 1.0 (1.3us)     | **9310** (12.1ms)|  9850 (12.8ms)  |
-    | LOC [6]        | **1.0** (15.8K)  | 0.59 (9.4K)     | **94** (1480K)   |  94  (1480K)    |
+    | LOC [6]        | **1.0** (19.1K)  | 0.53 (10.1K)    | **77** (1480K)   |  77  (1480K)    |
 
    [1] is based on wall time of compilation of sieve code (w/o any include file and with
    using memory file system for GCC) 100 times.  The used optimization level is 1
@@ -322,7 +359,9 @@ ex100:    func v, 0
     * It is small (10K C lines)
     * It uses SSA based IR (kind of simplified LLVM IR)
     * It has the same optimizations as MIR-generator plus aliasing but QBE has no inlining
+    * It generates slower code
     * It generates assembler code which makes QBE 30 slower in machine code generation than MIR-generator
+    * It generates code for more targets
   * [**LIBJIT**](https://www.gnu.org/software/libjit/) started as a part of DotGNU Project:
     * LIBJIT is bigger:
       * 80K C lines (for LIBJIT w/o dynamic Pascal compiler) vs 10K C lines for MIR
@@ -343,5 +382,5 @@ ex100:    func v, 0
       Mozilla Public License
 
 ## Porting MIR
-  * Currently MIR works on x86_64, aarch64, ppc64be, ppc64le, s390x Linux and x86_64/aarch64 (Apple M1) MacOS
+  * Currently MIR works on x86_64, aarch64, ppc64be, ppc64le, s390x, riscv-64 Linux and x86_64/aarch64 (Apple M1) MacOS
   * [HOW-TO-PORT-MIR.md](https://github.com/vnmakarov/mir/blob/master/HOW-TO-PORT-MIR.md) outlines process of porting MIR

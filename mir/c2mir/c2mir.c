@@ -1,5 +1,5 @@
 /* This file is a part of MIR project.
-   Copyright (C) 2018-2021 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+   Copyright (C) 2018-2023 Vladimir Makarov <vmakarov.gcc@gmail.com>.
 */
 
 /* C to MIR compiler.  It is a four pass compiler:
@@ -77,7 +77,7 @@ typedef struct stream {
   fpos_t fpos;                    /* file pos to resume file stream */
   const char *start, *curr;       /* non NULL only for string stream  */
   int ifs_length_at_stream_start; /* length of ifs at the stream start */
-} * stream_t;
+} *stream_t;
 
 DEF_VARR (stream_t);
 
@@ -120,7 +120,7 @@ DEF_HTAB (symbol_t);
 
 struct init_object {
   struct type *container_type;
-  int designator_p;
+  int field_designator_p;
   union {
     mir_llong curr_index;
     node_t curr_member;
@@ -296,6 +296,7 @@ struct type {
   struct type *arr_type; /* NULL or array type before its adjustment */
   struct type_qual type_qual;
   enum type_mode mode;
+  char func_type_before_adjustment_p;
   char unnamed_anon_struct_union_member_type_p;
   int align; /* type align, undefined if < 0  */
   /* Raw type size (w/o alignment type itself requirement but with
@@ -482,6 +483,7 @@ expr : N_I | N_L | N_LL | N_U | N_UL | N_ULL | N_F | N_D | N_LD
      | N_DEREF_FIELD (expr, N_ID) | N_COND (expr, expr, expr)
      | N_COMPOUND_LITERAL (type_name, initializer) | N_CALL (expr, N_LIST:(expr)*)
      | N_GENERIC (expr, N_LIST:(N_GENERIC_ASSOC (type_name?, expr))+ )
+     | N_STMTEXPR (compound_stmt)
 label: N_CASE(expr) | N_CASE(expr,expr) | N_DEFAULT | N_LABEL(N_ID)
 stmt: compound_stmt | N_IF(N_LIST:(label)*, expr, stmt, stmt?)
     | N_SWITCH(N_LIST:(label)*, expr, stmt) | (N_WHILE|N_DO) (N_LIST:(label)*, expr, stmt)
@@ -561,7 +563,7 @@ static token_code_t FIRST_KW = T_BOOL, LAST_KW = T_WHILE;
 typedef enum {
   REP8 (NODE_EL, IGNORE, I, L, LL, U, UL, ULL, F),
   REP8 (NODE_EL, D, LD, CH, CH16, CH32, STR, STR16, STR32),
-  REP4 (NODE_EL, ID, COMMA, ANDAND, OROR),
+  REP5 (NODE_EL, ID, COMMA, ANDAND, OROR, STMTEXPR),
   REP8 (NODE_EL, EQ, NE, LT, LE, GT, GE, ASSIGN, BITWISE_NOT),
   REP8 (NODE_EL, NOT, AND, AND_ASSIGN, OR, OR_ASSIGN, XOR, XOR_ASSIGN, LSH),
   REP8 (NODE_EL, LSH_ASSIGN, RSH, RSH_ASSIGN, ADD, ADD_ASSIGN, SUB, SUB_ASSIGN, MUL),
@@ -990,9 +992,7 @@ static int get_line (c2m_ctx_t c2m_ctx) { /* translation phase 1 and 2 */
   VARR_TRUNC (char, cs->ln, 0);
   for (c = ln_get (c2m_ctx); c != EOF && c != '\n'; c = ln_get (c2m_ctx))
     VARR_PUSH (char, cs->ln, c);
-#ifdef _WIN32
   if (VARR_LENGTH (char, cs->ln) != 0 && VARR_LAST (char, cs->ln) == '\r') VARR_POP (char, cs->ln);
-#endif
   eof_p = c == EOF;
   if (eof_p) {
     if (VARR_LENGTH (char, cs->ln) == 0) return FALSE;
@@ -1096,12 +1096,15 @@ static void push_str_char (c2m_ctx_t c2m_ctx, VARR (char) * temp, uint64_t ch, i
 #endif
 }
 
+static int pre_skip_if_part_p (c2m_ctx_t c2m_ctx);
+
 static void set_string_val (c2m_ctx_t c2m_ctx, token_t t, VARR (char) * temp, int type) {
   int i, str_len;
   int64_t curr_c, last_c = -1;
-  int64_t max_char
-    = (type == 'u' ? UINT16_MAX
-                   : type == 'U' ? UINT32_MAX : type == 'L' ? MIR_WCHAR_MAX : MIR_UCHAR_MAX);
+  int64_t max_char = (type == 'u'   ? UINT16_MAX
+                      : type == 'U' ? UINT32_MAX
+                      : type == 'L' ? MIR_WCHAR_MAX
+                                    : MIR_UCHAR_MAX);
   int start = type == ' ' ? 0 : type == '8' ? 2 : 1;
   int string_p = t->repr[start] == '"';
   const char *str;
@@ -1113,8 +1116,9 @@ static void set_string_val (c2m_ctx_t c2m_ctx, token_t t, VARR (char) * temp, in
   assert (str_len >= start + 2 && (str[start] == '"' || str[start] == '\'')
           && str[start] == str[str_len - 1]);
   for (i = start + 1; i < str_len - 1; i++) {
-    if (!string_p && last_c >= 0) error (c2m_ctx, t->pos, "multibyte character");
-    last_c = curr_c = str[i];
+    if (!string_p && last_c >= 0 && !pre_skip_if_part_p (c2m_ctx))
+      error (c2m_ctx, t->pos, "multibyte character");
+    last_c = curr_c = (unsigned char) str[i];
     if (curr_c != '\\') {
       push_str_char (c2m_ctx, temp, curr_c, type);
       continue;
@@ -1133,8 +1137,9 @@ static void set_string_val (c2m_ctx_t c2m_ctx, token_t t, VARR (char) * temp, in
     case '\?':
     case '\"': break;
     case 'e':
-      (c2m_options->pedantic_p ? error : warning) (c2m_ctx, t->pos,
-                                                   "non-standard escape sequence \\e");
+      if (!pre_skip_if_part_p (c2m_ctx))
+        (c2m_options->pedantic_p ? error : warning) (c2m_ctx, t->pos,
+                                                     "non-standard escape sequence \\e");
       last_c = curr_c = '\033';
       break;
     case '0':
@@ -1172,15 +1177,18 @@ static void set_string_val (c2m_ctx_t c2m_ctx, token_t t, VARR (char) * temp, in
         first_p = FALSE;
         if (v <= UINT32_MAX) {
           v *= 16;
-          v += (isdigit (curr_c) ? curr_c - '0'
-                                 : islower (curr_c) ? curr_c - 'a' + 10 : curr_c - 'A' + 10);
+          v += (isdigit (curr_c)   ? curr_c - '0'
+                : islower (curr_c) ? curr_c - 'a' + 10
+                                   : curr_c - 'A' + 10);
         }
       }
       if (first_p) {
-        error (c2m_ctx, t->pos, "wrong hexadecimal char %c", curr_c);
+        if (!pre_skip_if_part_p (c2m_ctx))
+          error (c2m_ctx, t->pos, "wrong hexadecimal char %c", curr_c);
       } else if (v > max_char) {
-        (c2m_options->pedantic_p ? error : warning) (c2m_ctx, t->pos,
-                                                     "too big hexadecimal char 0x%x", v);
+        if (!pre_skip_if_part_p (c2m_ctx))
+          (c2m_options->pedantic_p ? error : warning) (c2m_ctx, t->pos,
+                                                       "too big hexadecimal char 0x%x", v);
         curr_c = max_char;
       }
       last_c = curr_c = v;
@@ -1196,39 +1204,49 @@ static void set_string_val (c2m_ctx_t c2m_ctx, token_t t, VARR (char) * temp, in
         curr_c = str[i];
         if (!isxdigit (curr_c)) break;
         v *= 16;
-        v += (isdigit (curr_c) ? curr_c - '0'
-                               : islower (curr_c) ? curr_c - 'a' + 10 : curr_c - 'A' + 10);
+        v += (isdigit (curr_c)   ? curr_c - '0'
+              : islower (curr_c) ? curr_c - 'a' + 10
+                                 : curr_c - 'A' + 10);
       }
       last_c = curr_c = v;
       if (n < digits_num) {
-        error (c2m_ctx, t->pos, "unfinished \\%c<hex-digits>", start_c);
+        if (!pre_skip_if_part_p (c2m_ctx))
+          error (c2m_ctx, t->pos, "unfinished \\%c<hex-digits>", start_c);
       } else if (v > max_char && (!string_p || (type != ' ' && type != '8') || v > MAX_UTF8)) {
-        (c2m_options->pedantic_p ? error : warning) (c2m_ctx, t->pos,
-                                                     "too big universal char 0x%lx in \\%c",
-                                                     (unsigned long) v, start_c);
+        if (!pre_skip_if_part_p (c2m_ctx))
+          (c2m_options->pedantic_p ? error : warning) (c2m_ctx, t->pos,
+                                                       "too big universal char 0x%lx in \\%c",
+                                                       (unsigned long) v, start_c);
         last_c = curr_c = max_char;
       } else if ((0xD800 <= v && v <= 0xDFFF)
                  || (v < 0xA0 && v != 0x24 && v != 0x40 && v != 0x60)) {
-        error (c2m_ctx, t->pos, "usage of reserved value 0x%lx in \\%c", (unsigned long) v,
-               start_c);
-        curr_c = -1;
+        if (!pre_skip_if_part_p (c2m_ctx)) {
+          error (c2m_ctx, t->pos, "usage of reserved value 0x%lx in \\%c", (unsigned long) v,
+                 start_c);
+          curr_c = -1;
+        }
       }
       if (n < digits_num) i--;
       break;
     }
-    default: error (c2m_ctx, t->pos, "wrong escape char 0x%x", curr_c); curr_c = -1;
+    default:
+      if (!pre_skip_if_part_p (c2m_ctx)) {
+        error (c2m_ctx, t->pos, "wrong escape char 0x%x", curr_c);
+        curr_c = -1;
+      }
     }
     if (!string_p || curr_c >= 0) push_str_char (c2m_ctx, temp, curr_c, type);
   }
   push_str_char (c2m_ctx, temp, '\0', type);
   if (string_p)
     t->node->u.s = uniq_str (c2m_ctx, VARR_ADDR (char, temp), VARR_LENGTH (char, temp));
-  else if (last_c < 0)
-    error (c2m_ctx, t->pos, "empty char constant");
-  else if (type == 'U' || type == 'u' || type == 'L')
+  else if (last_c < 0) {
+    if (!pre_skip_if_part_p (c2m_ctx)) error (c2m_ctx, t->pos, "empty char constant");
+  } else if (type == 'U' || type == 'u' || type == 'L') {
     t->node->u.ul = last_c;
-  else
+  } else {
     t->node->u.ch = last_c;
+  }
 }
 
 static token_t new_id_token (c2m_ctx_t c2m_ctx, pos_t pos, const char *id_str) {
@@ -1507,13 +1525,12 @@ static token_t get_next_pptoken_1 (c2m_ctx_t c2m_ctx, int header_p) {
     case EOF: {
       pos_t pos = cs->pos;
 
-      assert (eof_s != cs);
       if (eof_s != NULL) free_stream (eof_s);
-      if (cs->f != stdin && cs->f != NULL) {
+      if (eof_s != cs && cs->f != stdin && cs->f != NULL) {
         fclose (cs->f);
         cs->f = NULL;
       }
-      eof_s = VARR_POP (stream_t, streams);
+      eof_s = VARR_LENGTH (stream_t, streams) == 0 ? NULL : VARR_POP (stream_t, streams);
       if (VARR_LENGTH (stream_t, streams) == 0) {
         return new_token (c2m_ctx, pos, "<EOU>", T_EOU, N_IGNORE);
       }
@@ -1600,7 +1617,7 @@ static token_t get_next_pptoken_1 (c2m_ctx_t c2m_ctx, int header_p) {
     case '\'':
     case '\"':
       wide_type = ' ';
-    literal : {
+    literal: {
       token_t t;
       int stop = curr_c;
 
@@ -1608,17 +1625,28 @@ static token_t get_next_pptoken_1 (c2m_ctx_t c2m_ctx, int header_p) {
       VARR_PUSH (char, symbol_text, curr_c);
       for (curr_c = cs_get (c2m_ctx); curr_c != stop && curr_c != '\n' && curr_c != EOF;
            curr_c = cs_get (c2m_ctx)) {
-        VARR_PUSH (char, symbol_text, curr_c);
+        if (curr_c == '\0') {
+          warning (c2m_ctx, pos, "null character in %s literal ignored",
+                   stop == '"' ? "string" : "char");
+        } else {
+          VARR_PUSH (char, symbol_text, curr_c);
+        }
         if (curr_c != '\\') continue;
         curr_c = cs_get (c2m_ctx);
         if (curr_c == '\n' || curr_c == EOF) break;
-        VARR_PUSH (char, symbol_text, curr_c);
+        if (curr_c == '\0') {
+          warning (c2m_ctx, pos, "null character in %s literal ignored",
+                   stop == '"' ? "string" : "char");
+        } else {
+          VARR_PUSH (char, symbol_text, curr_c);
+        }
       }
       VARR_PUSH (char, symbol_text, curr_c);
       if (curr_c == stop) {
         if (stop == '\'' && VARR_LENGTH (char, symbol_text) == 1)
           error (c2m_ctx, pos, "empty character");
       } else {
+        if (curr_c == '\n') cs_unget (c2m_ctx, '\n');
         error (c2m_ctx, pos, "unterminated %s", stop == '"' ? "string" : "char");
         VARR_PUSH (char, symbol_text, stop);
       }
@@ -1673,7 +1701,7 @@ static token_t get_next_pptoken_1 (c2m_ctx_t c2m_ctx, int header_p) {
       } else {
         VARR_PUSH (char, symbol_text, curr_c);
         VARR_PUSH (char, symbol_text, '\0');
-        return new_token_wo_uniq_repr (c2m_ctx, pos, VARR_ADDR (char, symbol_text), curr_c,
+        return new_token_wo_uniq_repr (c2m_ctx, cs->pos, VARR_ADDR (char, symbol_text), curr_c,
                                        N_IGNORE);
       }
     }
@@ -1904,7 +1932,7 @@ typedef struct macro {          /* macro definition: */
   VARR (token_t) * params;      /* (T_ID)* [N_DOTS], NULL means no params */
   VARR (token_t) * replacement; /* token*, NULL means a standard macro */
   int ignore_p;
-} * macro_t;
+} *macro_t;
 
 DEF_VARR (macro_t);
 DEF_HTAB (macro_t);
@@ -1912,7 +1940,7 @@ DEF_HTAB (macro_t);
 typedef struct ifstate {
   int skip_p, true_p, else_p; /* ??? flags that we are in a else part and in a false part */
   pos_t if_pos;               /* pos for #if and last #else, #elif */
-} * ifstate_t;
+} *ifstate_t;
 
 DEF_VARR (ifstate_t);
 
@@ -1927,7 +1955,7 @@ typedef struct macro_call {
   VARR (token_arr_t) * args;
   int repl_pos;                 /* position in macro replacement */
   VARR (token_t) * repl_buffer; /* LIST:(token nodes)* */
-} * macro_call_t;
+} *macro_call_t;
 
 DEF_VARR (macro_call_t);
 
@@ -1969,6 +1997,11 @@ struct pre_ctx {
 #define actual_pre_pos pre_ctx->actual_pre_pos
 #define pptokens_num pre_ctx->pptokens_num
 #define pre_out_token_func pre_ctx->pre_out_token_func
+
+static int pre_skip_if_part_p (c2m_ctx_t c2m_ctx) {
+  pre_ctx_t pre_ctx = c2m_ctx->pre_ctx;
+  return pre_ctx != NULL && skip_if_part_p;
+}
 
 /* It is a token based prerpocessor.
    It is input preprocessor tokens and output is (parser) tokens */
@@ -2161,7 +2194,7 @@ static void add_include_stream (c2m_ctx_t c2m_ctx, const char *fname, const char
 static void skip_nl (c2m_ctx_t c2m_ctx, token_t t,
                      VARR (token_t) * buffer) { /* skip until new line */
   if (t == NULL) t = get_next_pptoken (c2m_ctx);
-  for (; t->code != '\n'; t = get_next_pptoken (c2m_ctx))  // ??>
+  for (; t->code != '\n' && t->code != T_EOU; t = get_next_pptoken (c2m_ctx))  // ??>
     if (buffer != NULL) VARR_PUSH (token_t, buffer, t);
   unget_next_pptoken (c2m_ctx, t);
 }
@@ -2266,10 +2299,20 @@ static void define (c2m_ctx_t c2m_ctx) {
   }
   if (t->code == ' ') t = get_next_pptoken (c2m_ctx);
   for (; t->code != '\n'; t = get_next_pptoken (c2m_ctx)) {
-    if (t->code == T_DBLNO) t->code = T_RDBLNO;
+    if (t->code == T_DBLNO) {
+      if (VARR_LENGTH (token_t, repl) == 0) {
+        error (c2m_ctx, t->pos, "## at the beginning of a macro expansion");
+        continue;
+      }
+      t->code = T_RDBLNO;
+    }
     VARR_PUSH (token_t, repl, t);
   }
   unget_next_pptoken (c2m_ctx, t);
+  if (VARR_LENGTH (token_t, repl) != 0 && (t = VARR_LAST (token_t, repl))->code == T_RDBLNO) {
+    VARR_POP (token_t, repl);
+    error (c2m_ctx, t->pos, "## at the end of a macro expansion");
+  }
   name = id->repr;
   macro_struct.id = id;
   if (!HTAB_DO (macro_t, macro_tab, &macro_struct, HTAB_FIND, m)) {
@@ -2285,9 +2328,11 @@ static void define (c2m_ctx_t c2m_ctx) {
     if (!params_eq_p (m->params, params) || !replacement_eq_p (m->replacement, repl)) {
       if (c2m_options->pedantic_p) {
         error (c2m_ctx, id->pos, "different macro redefinition of %s", name);
+        error (c2m_ctx, m->id->pos, "previous definition of %s", m->id->repr);
       } else {
         VARR (token_t) * temp;
         warning (c2m_ctx, id->pos, "different macro redefinition of %s", name);
+        warning (c2m_ctx, m->id->pos, "previous definition of %s", m->id->repr);
         SWAP (m->params, params, temp);
         SWAP (m->replacement, repl, temp);
       }
@@ -2527,7 +2572,7 @@ static void find_args (c2m_ctx_t c2m_ctx, macro_call_t mc) { /* we have just rea
 #ifdef C2MIR_PREPRO_DEBUG
   fprintf (stderr, "# finding args of macro %s call:\n#    arg 0:", m->id->repr);
 #endif
-  for (;;) {
+  for (int newln_p = FALSE;; newln_p = t->code == '\n') {
     t = get_next_pptoken (c2m_ctx);
 #ifdef C2MIR_PREPRO_DEBUG
     fprintf (stderr, " <%s>%s", get_token_str (t), t->processed_p ? "*" : "");
@@ -2540,7 +2585,7 @@ static void find_args (c2m_ctx_t c2m_ctx, macro_call_t mc) { /* we have just rea
       pop_macro_call (c2m_ctx);
     }
     if (t->code == T_EOFILE || t->code == T_EOU || t->code == T_EOR || t->code == T_BOA
-        || t->code == T_EOA)
+        || t->code == T_EOA || (newln_p && t->code == '#'))
       break;
     if (level == 0 && t->code == ')') break;
     if (level == 0 && !va_p && t->code == ',') {
@@ -2563,7 +2608,13 @@ static void find_args (c2m_ctx_t c2m_ctx, macro_call_t mc) { /* we have just rea
 #ifdef C2MIR_PREPRO_DEBUG
   fprintf (stderr, "\n");
 #endif
-  if (t->code != ')') error (c2m_ctx, t->pos, "unfinished call of macro %s", m->id->repr);
+  if (t->code != ')') {
+    error (c2m_ctx, t->pos, "unfinished call of macro %s", m->id->repr);
+#ifdef C2MIR_PREPRO_DEBUG
+    fprintf (stderr, "# push back <%s>%s\n", get_token_str (t), t->processed_p ? "*" : "");
+#endif
+    unget_next_pptoken (c2m_ctx, t);
+  }
   VARR_PUSH (token_arr_t, args, arg);
   if (params_len == 0 && VARR_LENGTH (token_arr_t, args) == 1) {
     token_arr_t arr = VARR_GET (token_arr_t, args, 0);
@@ -2577,7 +2628,8 @@ static void find_args (c2m_ctx_t c2m_ctx, macro_call_t mc) { /* we have just rea
     }
   }
   if (VARR_LENGTH (token_arr_t, args) > params_len) {
-    t = VARR_GET (token_t, VARR_GET (token_arr_t, args, params_len), 0);
+    token_arr_t arg = VARR_GET (token_arr_t, args, params_len);
+    if (VARR_LENGTH (token_t, arg) != 0) t = VARR_GET (token_t, arg, 0);
     while (VARR_LENGTH (token_arr_t, args) > params_len) {
       temp_arr = VARR_POP (token_arr_t, args);
       VARR_DESTROY (token_t, temp_arr);
@@ -2603,6 +2655,7 @@ static token_t token_concat (c2m_ctx_t c2m_ctx, token_t t1, token_t t2) {
   set_string_stream (c2m_ctx, VARR_ADDR (char, temp_string), t1->pos, NULL);
   t = get_next_pptoken (c2m_ctx);
   next = get_next_pptoken (c2m_ctx);
+  while (next->code == T_EOU) next = get_next_pptoken (c2m_ctx);
   if (next->code != T_EOFILE) {
     error (c2m_ctx, t1->pos, "wrong result of ##: %s", reverse (temp_string));
     remove_string_stream (c2m_ctx);
@@ -3028,6 +3081,7 @@ static void process_directive (c2m_ctx_t c2m_ctx) {
       skip_nl (c2m_ctx, t1, temp_buffer);
       unget_next_pptoken (c2m_ctx, new_token (c2m_ctx, t->pos, "", T_EOP, N_IGNORE));
       push_back (c2m_ctx, temp_buffer);
+      if (n_errors != 0) VARR_TRUNC (macro_call_t, macro_call_stack, 0); /* can be non-empty */
       assert (VARR_LENGTH (macro_call_t, macro_call_stack) == 0 && !no_out_p);
       no_out_p = TRUE;
       processing (c2m_ctx, TRUE);
@@ -3047,8 +3101,9 @@ static void process_directive (c2m_ctx_t c2m_ctx) {
     skip_nl (c2m_ctx, NULL, temp_buffer);
     unget_next_pptoken (c2m_ctx, new_token (c2m_ctx, t->pos, "", T_EOP, N_IGNORE));
     push_back (c2m_ctx, temp_buffer);
+    if (n_errors != 0) VARR_TRUNC (macro_call_t, macro_call_stack, 0); /* can be non-empty */
     assert (VARR_LENGTH (macro_call_t, macro_call_stack) == 0 && !no_out_p);
-    no_out_p = 1;
+    no_out_p = TRUE;
     processing (c2m_ctx, TRUE);
     no_out_p = 0;
     move_tokens (temp_buffer, output_buffer);
@@ -3436,13 +3491,13 @@ static struct val eval (c2m_ctx_t c2m_ctx, node_t tree) {
 
     res.uns_p = eval_binop_operands (c2m_ctx, tree, &v1, &v2);
     if (res.uns_p) {
-      res.u.u_val = ((zero_p = v2.u.u_val == 0)
-                       ? 1
-                       : tree->code == N_DIV ? v1.u.u_val / v2.u.u_val : v1.u.u_val % v2.u.u_val);
+      res.u.u_val = ((zero_p = v2.u.u_val == 0) ? 1
+                     : tree->code == N_DIV      ? v1.u.u_val / v2.u.u_val
+                                                : v1.u.u_val % v2.u.u_val);
     } else {
-      res.u.i_val = ((zero_p = v2.u.i_val == 0)
-                       ? 1
-                       : tree->code == N_DIV ? v1.u.i_val / v2.u.i_val : v1.u.i_val % v2.u.i_val);
+      res.u.i_val = ((zero_p = v2.u.i_val == 0) ? 1
+                     : tree->code == N_DIV      ? v1.u.i_val / v2.u.i_val
+                                                : v1.u.i_val % v2.u.i_val);
     }
     if (zero_p)
       error (c2m_ctx, POS (tree), "division (%s) by zero in preporocessor",
@@ -3521,7 +3576,7 @@ static void processing (c2m_ctx_t c2m_ctx, int ignore_directive_p) {
       out_token (c2m_ctx, t);
       continue;
     } else if (t->code == T_EOFILE || t->code == T_EOU) {
-      if (VARR_LENGTH (ifstate_t, ifs) > eof_s->ifs_length_at_stream_start) {
+      if (VARR_LENGTH (ifstate_t, ifs) > (eof_s == NULL ? 0 : eof_s->ifs_length_at_stream_start)) {
         error (c2m_ctx, VARR_LAST (ifstate_t, ifs)->if_pos, "unfinished #if");
       }
       if (t->code == T_EOU) return;
@@ -3968,6 +4023,8 @@ static node_t try_arg_f (c2m_ctx_t c2m_ctx, nonterm_arg_func_t f, node_t arg) {
 #define TRY(f) try_f (c2m_ctx, f)
 #define TRY_A(f, arg) try_arg_f (c2m_ctx, f, arg)
 
+D (compound_stmt);
+
 /* Expressions: */
 D (type_name);
 D (expr);
@@ -3992,7 +4049,12 @@ D (primary_expr) {
   if (MN (T_ID, r) || MN (T_NUMBER, r) || MN (T_CH, r) || MN (T_STR, r)) {
     return r;
   } else if (M ('(')) {
-    P (expr);
+    if (C ('{')) {
+      P (compound_stmt);
+      r = new_node1 (c2m_ctx, N_STMTEXPR, r);
+    } else {
+      P (expr);
+    }
     if (M (')')) return r;
   } else if (MP (T_GENERIC, pos)) {
     PT ('(');
@@ -4374,6 +4436,11 @@ D (sc_spec) {
   } else if (MP (T_REGISTER, pos)) {
     r = new_pos_node (c2m_ctx, N_REGISTER, pos);
   } else if (MP (T_THREAD_LOCAL, pos)) {
+    if (c2m_options->pedantic_p)
+      error (c2m_ctx, pos, "Thread local is not implemented");
+    else
+      warning (c2m_ctx, pos,
+               "Thread local is not implemented -- program might not work as assumed");
     r = new_pos_node (c2m_ctx, N_THREAD_LOCAL, pos);
   } else {
     if (record_level == 0) syntax_error (c2m_ctx, "a storage specifier");
@@ -4424,7 +4491,7 @@ DA (type_spec) {
       id_p = TRUE;
     }
     if (M ('{')) {
-      if (!C ('}')) {
+      if (!C ('}') && !M (';')) {
         P (struct_declaration_list);
       } else {
         (c2m_options->pedantic_p ? error : warning) (c2m_ctx, pos, "empty struct/union");
@@ -4739,6 +4806,7 @@ D (param_type_list) {
   pos_t pos;
 
   list = new_node (c2m_ctx, N_LIST);
+  if (C (')')) return list;
   for (;;) { /* parameter-list, parameter-declaration */
     PA (declaration_specs, NULL);
     op1 = r;
@@ -4973,7 +5041,6 @@ D (st_assert) {
 }
 
 /* Statements: */
-D (compound_stmt);
 
 D (label) {
   parse_ctx_t parse_ctx = c2m_ctx->parse_ctx;
@@ -5375,6 +5442,7 @@ struct check_ctx {
   node_t curr_unnamed_anon_struct_union_member;
   node_t curr_switch;
   VARR (decl_t) * func_decls_for_allocation;
+  VARR (node_t) * possible_incomplete_decls;
   node_t n_i1_node;
   HTAB (case_t) * case_tab;
   node_t curr_func_def, curr_loop, curr_loop_switch;
@@ -5390,6 +5458,7 @@ struct check_ctx {
 #define curr_unnamed_anon_struct_union_member check_ctx->curr_unnamed_anon_struct_union_member
 #define curr_switch check_ctx->curr_switch
 #define func_decls_for_allocation check_ctx->func_decls_for_allocation
+#define possible_incomplete_decls check_ctx->possible_incomplete_decls
 #define n_i1_node check_ctx->n_i1_node
 #define case_tab check_ctx->case_tab
 #define curr_func_def check_ctx->curr_func_def
@@ -5462,11 +5531,11 @@ static void symbol_finish (c2m_ctx_t c2m_ctx) {
 }
 
 enum basic_type get_int_basic_type (size_t s) {
-  return (s == sizeof (mir_int)
-            ? TP_INT
-            : s == sizeof (mir_short)
-                ? TP_SHORT
-                : s == sizeof (mir_long) ? TP_LONG : s == sizeof (mir_schar) ? TP_SCHAR : TP_LLONG);
+  return (s == sizeof (mir_int)     ? TP_INT
+          : s == sizeof (mir_short) ? TP_SHORT
+          : s == sizeof (mir_long)  ? TP_LONG
+          : s == sizeof (mir_schar) ? TP_SCHAR
+                                    : TP_LLONG);
 }
 
 static int type_qual_eq_p (const struct type_qual *tq1, const struct type_qual *tq2) {
@@ -5495,10 +5564,12 @@ static struct type_qual type_qual_union (const struct type_qual *tq1, const stru
 
 static void init_type (struct type *type) {
   clear_type_qual (&type->type_qual);
+  type->mode = TM_UNDEF;
   type->pos_node = NULL;
   type->arr_type = NULL;
   type->align = -1;
   type->raw_size = MIR_SIZE_MAX;
+  type->func_type_before_adjustment_p = FALSE;
   type->unnamed_anon_struct_union_member_type_p = FALSE;
 }
 
@@ -5696,6 +5767,7 @@ struct decl {
 
 static enum basic_type get_enum_basic_type (const struct type *type) {
   assert (type->mode == TM_ENUM);
+  if (type->u.tag_type->attr == NULL) return TP_INT; /* in case of undefined enum */
   return ((struct enum_type *) type->u.tag_type->attr)->enum_basic_type;
 }
 
@@ -5853,7 +5925,12 @@ static int basic_type_size (enum basic_type bt) {
   }
 }
 
-static int basic_type_align (enum basic_type bt) { return basic_type_size (bt); }
+static int basic_type_align (enum basic_type bt) {
+#ifdef MIR_LDOUBLE_ALIGN
+  if (bt == TP_LDOUBLE) return MIR_LDOUBLE_ALIGN;
+#endif
+  return basic_type_size (bt);
+}
 
 static int type_align (struct type *type) {
   assert (type->align >= 0);
@@ -6007,7 +6084,8 @@ static void set_type_layout (c2m_ctx_t c2m_ctx, struct type *type) {
   } else if (type->mode == TM_ARR) {
     struct arr_type *arr_type = type->u.arr_type;
     struct expr *cexpr = arr_type->size->attr;
-    mir_size_t nel = (arr_type->size->code == N_IGNORE || !cexpr->const_p ? 1 : cexpr->u.i_val);
+    mir_size_t nel
+      = (arr_type->size->code == N_IGNORE || cexpr == NULL || !cexpr->const_p ? 1 : cexpr->u.i_val);
 
     set_type_layout (c2m_ctx, arr_type->el_type);
     overall_size = type_size (c2m_ctx, arr_type->el_type) * nel;
@@ -6115,10 +6193,8 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
   assert (to_e->const_p && from_e->const_p);
   struct type *from = from_e->type;
 
-#define CONV(TP, cast, mto, mfrom)        \
-  case TP:                                \
-    to_e->u.mto = (cast) from_e->u.mfrom; \
-    break;
+#define CONV(TP, cast, mto, mfrom) \
+  case TP: to_e->u.mto = (cast) from_e->u.mfrom; break;
 #define BASIC_FROM_CONV(mfrom)                                                           \
   switch (to->u.basic_type) {                                                            \
     CONV (TP_BOOL, mir_bool, u_val, mfrom) CONV (TP_UCHAR, mir_uchar, u_val, mfrom);     \
@@ -6334,7 +6410,11 @@ static void def_symbol (c2m_ctx_t c2m_ctx, enum symbol_mode mode, node_t id, nod
     return;
   }
   tab_decl_spec = ((decl_t) sym.def_node->attr)->decl_spec;
-  if (linkage == N_IGNORE) {
+  if ((def_node->code == N_ENUM_CONST || sym.def_node->code == N_ENUM_CONST)
+      && def_node->code != sym.def_node->code) {
+    error (c2m_ctx, POS (id), "%s redeclared as a different kind of symbol", id->u.s.s);
+    return;
+  } else if (linkage == N_IGNORE) {
     if (!decl_spec.typedef_p || !tab_decl_spec.typedef_p
         || !type_eq_p (decl_spec.type, tab_decl_spec.type))
 #if defined(__APPLE__)
@@ -6650,15 +6730,12 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
             enum_value->u.i_val = curr_val;
           }
           enum_type->enum_basic_type
-            = (max_val <= MIR_INT_MAX && MIR_INT_MIN <= min_val
-                 ? TP_INT
-                 : max_val <= MIR_UINT_MAX && 0 <= min_val
-                     ? TP_UINT
-                     : max_val <= MIR_LONG_MAX && MIR_LONG_MIN <= min_val
-                         ? TP_LONG
-                         : max_val <= MIR_ULONG_MAX && 0 <= min_val
-                             ? TP_ULONG
-                             : min_val < 0 || max_val <= MIR_LLONG_MAX ? TP_LLONG : TP_ULLONG);
+            = (max_val <= MIR_INT_MAX && MIR_INT_MIN <= min_val     ? TP_INT
+               : max_val <= MIR_UINT_MAX && 0 <= min_val            ? TP_UINT
+               : max_val <= MIR_LONG_MAX && MIR_LONG_MIN <= min_val ? TP_LONG
+               : max_val <= MIR_ULONG_MAX && 0 <= min_val           ? TP_ULONG
+               : min_val < 0 || max_val <= MIR_LLONG_MAX            ? TP_LLONG
+                                                                    : TP_ULLONG);
         }
       }
       break;
@@ -6778,6 +6855,7 @@ static void adjust_param_type (c2m_ctx_t c2m_ctx, struct type **type_ptr) {
     par_type = create_type (c2m_ctx, NULL);
     par_type->mode = TM_PTR;
     par_type->pos_node = type->pos_node;
+    par_type->func_type_before_adjustment_p = TRUE;
     par_type->u.ptr_type = type;
     *type_ptr = type = par_type;
     make_type_complete (c2m_ctx, type);
@@ -7055,28 +7133,25 @@ static void check_assignment_types (c2m_ctx_t c2m_ctx, struct type *left, struct
     if (!arithmetic_type_p (right)
         && !(left->mode == TM_BASIC && left->u.basic_type == TP_BOOL && right->mode == TM_PTR)) {
       if (integer_type_p (left) && right->mode == TM_PTR) {
-        msg
-          = (code == N_CALL ? "using pointer without cast for integer type parameter"
-                            : code == N_RETURN ? "returning pointer without cast for integer result"
-                                               : "assigning pointer without cast to integer");
+        msg = (code == N_CALL     ? "using pointer without cast for integer type parameter"
+               : code == N_RETURN ? "returning pointer without cast for integer result"
+                                  : "assigning pointer without cast to integer");
         (c2m_options->pedantic_p ? error : warning) (c2m_ctx, POS (assign_node), "%s", msg);
       } else {
-        msg = (code == N_CALL
-                 ? "incompatible argument type for arithemtic type parameter"
-                 : code != N_RETURN
-                     ? "incompatible types in assignment to an arithemtic type lvalue"
-                     : "incompatible return-expr type in function returning an arithemtic value");
+        msg = (code == N_CALL ? "incompatible argument type for arithmetic type parameter"
+               : code != N_RETURN
+                 ? "incompatible types in assignment to an arithmetic type lvalue"
+                 : "incompatible return-expr type in function returning an arithmetic value");
         error (c2m_ctx, POS (assign_node), "%s", msg);
       }
     }
   } else if (left->mode == TM_STRUCT || left->mode == TM_UNION) {
     if ((right->mode != TM_STRUCT && right->mode != TM_UNION)
         || !compatible_types_p (left, right, TRUE)) {
-      msg = (code == N_CALL
-               ? "incompatible argument type for struct/union type parameter"
-               : code != N_RETURN
-                   ? "incompatible types in assignment to struct/union"
-                   : "incompatible return-expr type in function returning a struct/union");
+      msg = (code == N_CALL ? "incompatible argument type for struct/union type parameter"
+             : code != N_RETURN
+               ? "incompatible types in assignment to struct/union"
+               : "incompatible return-expr type in function returning a struct/union");
       error (c2m_ctx, POS (assign_node), "%s", msg);
     }
   } else if (left->mode == TM_PTR) {
@@ -7089,45 +7164,41 @@ static void check_assignment_types (c2m_ctx_t c2m_ctx, struct type *left, struct
                                                right->u.ptr_type, TRUE)))) {
       if (right->mode == TM_PTR && left->u.ptr_type->mode == TM_BASIC
           && right->u.ptr_type->mode == TM_BASIC) {
-        msg = (code == N_CALL ? "incompatible pointer types of argument and parameter"
-                              : code == N_RETURN
-                                  ? "incompatible pointer types of return-expr and function result"
+        msg = (code == N_CALL     ? "incompatible pointer types of argument and parameter"
+               : code == N_RETURN ? "incompatible pointer types of return-expr and function result"
                                   : "incompatible pointer types in assignment");
         int sign_diff_p = char_type_p (left->u.ptr_type) && char_type_p (right->u.ptr_type);
         if (!sign_diff_p || c2m_options->pedantic_p)
           (c2m_options->pedantic_p && !sign_diff_p ? error : warning) (c2m_ctx, POS (assign_node),
                                                                        "%s", msg);
       } else if (integer_type_p (right)) {
-        msg
-          = (code == N_CALL ? "using integer without cast for pointer type parameter"
-                            : code == N_RETURN ? "returning integer without cast for pointer result"
-                                               : "assigning integer without cast to pointer");
+        msg = (code == N_CALL     ? "using integer without cast for pointer type parameter"
+               : code == N_RETURN ? "returning integer without cast for pointer result"
+                                  : "assigning integer without cast to pointer");
         (c2m_options->pedantic_p ? error : warning) (c2m_ctx, POS (assign_node), "%s", msg);
       } else {
-        msg = (code == N_CALL ? "incompatible argument type for pointer type parameter"
-                              : code == N_RETURN
-                                  ? "incompatible return-expr type in function returning a pointer"
+        msg = (code == N_CALL     ? "incompatible argument type for pointer type parameter"
+               : code == N_RETURN ? "incompatible return-expr type in function returning a pointer"
                                   : "incompatible types in assignment to a pointer");
         (c2m_options->pedantic_p || right->mode != TM_PTR ? error : warning) (c2m_ctx,
                                                                               POS (assign_node),
                                                                               "%s", msg);
       }
     } else if (right->u.ptr_type->type_qual.atomic_p) {
-      msg = (code == N_CALL ? "passing a pointer of an atomic type"
-                            : code == N_RETURN ? "returning a pointer of an atomic type"
-                                               : "assignment of pointer of an atomic type");
+      msg = (code == N_CALL     ? "passing a pointer of an atomic type"
+             : code == N_RETURN ? "returning a pointer of an atomic type"
+                                : "assignment of pointer of an atomic type");
       error (c2m_ctx, POS (assign_node), "%s", msg);
     } else if (!type_qual_subset_p (&right->u.ptr_type->type_qual, &left->u.ptr_type->type_qual)) {
-      msg = (code == N_CALL
-               ? "discarding type qualifiers in passing argument"
-               : code == N_RETURN ? "return discards a type qualifier from a pointer"
-                                  : "assignment discards a type qualifier from a pointer");
+      msg = (code == N_CALL     ? "discarding type qualifiers in passing argument"
+             : code == N_RETURN ? "return discards a type qualifier from a pointer"
+                                : "assignment discards a type qualifier from a pointer");
       (c2m_options->pedantic_p ? error : warning) (c2m_ctx, POS (assign_node), "%s", msg);
     }
   } else {
-    msg = (code == N_CALL ? "passing assign incompatible value"
-                          : code == N_RETURN ? "returning assign incompatible value"
-                                             : "assignment of incompatible value");
+    msg = (code == N_CALL     ? "passing assign incompatible value"
+           : code == N_RETURN ? "returning assign incompatible value"
+                              : "assignment of incompatible value");
     error (c2m_ctx, POS (assign_node), "%s", msg);
   }
 }
@@ -7184,13 +7255,13 @@ static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, struct type 
                init_object.u.curr_member = NL_NEXT (init_object.u.curr_member))
             ;
         } else if (init_object.container_type->mode == TM_UNION
-                   && !init_object.designator_p) { /* no next union member: */
+                   && !init_object.field_designator_p) { /* no next union member: */
           init_object.u.curr_member = NULL;
         } else { /* finding the next named struct member: */
           init_object.u.curr_member = get_adjacent_member (init_object.u.curr_member, TRUE);
         }
         if (init_object.u.curr_member != NULL) {
-          init_object.designator_p = FALSE;
+          init_object.field_designator_p = FALSE;
           el_type = ((decl_t) init_object.u.curr_member->attr)->decl_spec.type;
           break;
         }
@@ -7199,13 +7270,13 @@ static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, struct type 
     }
     VARR_SET (init_object_t, init_object_path, VARR_LENGTH (init_object_t, init_object_path) - 1,
               init_object);
-    if (list_p || scalar_type_p (el_type)) return TRUE;
+    if (list_p || scalar_type_p (el_type) || void_type_p (el_type)) return TRUE;
     assert (el_type->mode == TM_ARR || el_type->mode == TM_STRUCT || el_type->mode == TM_UNION);
     if (el_type->mode != TM_ARR && value_type != NULL
         && el_type->u.tag_type == value_type->u.tag_type)
       return TRUE;
     init_object.container_type = el_type;
-    init_object.designator_p = FALSE;
+    init_object.field_designator_p = FALSE;
     if (el_type->mode == TM_ARR) {
       init_object.u.curr_index = -1;
     } else {
@@ -7231,7 +7302,7 @@ static int init_compatible_string_p (node_t n, struct type *el_type) {
               && el_type->u.basic_type == get_uint_basic_type (4)));
 }
 
-static int update_path_and_do (c2m_ctx_t c2m_ctx,
+static int update_path_and_do (c2m_ctx_t c2m_ctx, int go_inside_p,
                                void (*action) (c2m_ctx_t c2m_ctx, decl_t member_decl,
                                                struct type **type_ptr, node_t initializer,
                                                int const_only_p, int top_p),
@@ -7243,10 +7314,12 @@ static int update_path_and_do (c2m_ctx_t c2m_ctx,
   struct expr *value_expr = value->attr;
 
   if (!update_init_object_path (c2m_ctx, mark, value_expr == NULL ? NULL : value_expr->type,
-                                value->code == N_LIST || value->code == N_COMPOUND_LITERAL)) {
+                                !go_inside_p || value->code == N_LIST
+                                  || value->code == N_COMPOUND_LITERAL)) {
     error (c2m_ctx, pos, "excess elements in %s initializer", detail);
     return FALSE;
   }
+  if (!go_inside_p) return TRUE;
   init_object = VARR_LAST (init_object_t, init_object_path);
   if (init_object.container_type->mode == TM_ARR) {
     el_type = init_object.container_type->u.arr_type->el_type;
@@ -7399,7 +7472,7 @@ static void process_init_field_designator (c2m_ctx_t c2m_ctx, node_t designator_
   /* We can have *partial* path of containing anon members: pop them */
   while (VARR_LENGTH (init_object_t, init_object_path) != 0) {
     init_object = VARR_LAST (init_object_t, init_object_path);
-    if ((decl = init_object.u.curr_member->attr) == NULL
+    if (!init_object.field_designator_p || (decl = init_object.u.curr_member->attr) == NULL
         || !decl->decl_spec.type->unnamed_anon_struct_union_member_type_p) {
       break;
     }
@@ -7417,13 +7490,13 @@ static void process_init_field_designator (c2m_ctx_t c2m_ctx, node_t designator_
   while (VARR_LENGTH (node_t, containing_anon_members) != 0) {
     init_object.u.curr_member = VARR_POP (node_t, containing_anon_members);
     init_object.container_type = container_type;
-    init_object.designator_p = FALSE;
+    init_object.field_designator_p = FALSE;
     VARR_PUSH (init_object_t, init_object_path, init_object);
     container_type = (decl = init_object.u.curr_member->attr)->decl_spec.type;
   }
   init_object.u.curr_member = get_adjacent_member (designator_member, FALSE);
   init_object.container_type = container_type;
-  init_object.designator_p = TRUE;
+  init_object.field_designator_p = TRUE;
   VARR_PUSH (init_object_t, init_object_path, init_object);
 }
 
@@ -7448,6 +7521,18 @@ static node_t get_compound_literal (node_t n, int *addr_p) {
   return NULL;
 }
 
+static mir_llong get_arr_type_size (c2m_ctx_t c2m_ctx, struct type *arr_type) {
+  node_t size_node;
+  struct expr *sexpr;
+
+  assert (arr_type->mode == TM_ARR);
+  size_node = arr_type->u.arr_type->size;
+  sexpr = size_node->attr;
+  return (size_node->code != N_IGNORE && sexpr->const_p && integer_type_p (sexpr->type)
+            ? sexpr->u.i_val
+            : -1);
+}
+
 static void check_initializer (c2m_ctx_t c2m_ctx, decl_t member_decl, struct type **type_ptr,
                                node_t initializer, int const_only_p, int top_p) {
   struct type *type = *type_ptr;
@@ -7457,7 +7542,6 @@ static void check_initializer (c2m_ctx_t c2m_ctx, decl_t member_decl, struct typ
   mir_llong size_val = 0; /* to remove an uninitialized warning */
   size_t mark, len;
   symbol_t sym;
-  struct expr *sexpr;
   init_object_t init_object;
   int addr_p = FALSE; /* to remove an uninitialized warning */
 
@@ -7506,7 +7590,10 @@ check_one_value:
     }
     return;
   }
-  if (init == NULL) return;
+  if (init == NULL) {
+    if (scalar_type_p (type)) error (c2m_ctx, POS (initializer), "empty scalar initializer");
+    return;
+  }
   assert (init->code == N_INIT);
   des_list = NL_HEAD (init->u.ops);
   assert (des_list->code == N_LIST);
@@ -7529,13 +7616,9 @@ check_one_value:
   }
   mark = VARR_LENGTH (init_object_t, init_object_path);
   init_object.container_type = type;
-  init_object.designator_p = FALSE;
+  init_object.field_designator_p = FALSE;
   if (type->mode == TM_ARR) {
-    size_node = type->u.arr_type->size;
-    sexpr = size_node->attr;
-    size_val = (size_node->code != N_IGNORE && sexpr->const_p && integer_type_p (sexpr->type)
-                  ? sexpr->u.i_val
-                  : -1);
+    size_val = get_arr_type_size (c2m_ctx, type);
     init_object.u.curr_index = -1;
   } else {
     init_object.u.curr_member = NULL;
@@ -7554,44 +7637,63 @@ check_one_value:
       break;
     }
     if ((curr_des = NL_HEAD (des_list->u.ops)) == NULL) {
-      if (!update_path_and_do (c2m_ctx, check_initializer, mark, value, const_only_p, &max_index,
-                               POS (init), "array/struct/union"))
+      if (!update_path_and_do (c2m_ctx, TRUE, check_initializer, mark, value, const_only_p,
+                               &max_index, POS (init), "array/struct/union"))
         break;
     } else {
-      for (; curr_des != NULL; curr_des = NL_NEXT (curr_des)) {
-        VARR_TRUNC (init_object_t, init_object_path, mark + 1);
-        init_object = VARR_POP (init_object_t, init_object_path);
+      struct type *curr_type = type;
+      mir_llong arr_size_val MIR_UNUSED;
+      int first_p = TRUE;
+
+      VARR_TRUNC (init_object_t, init_object_path, mark + 1);
+      for (; curr_des != NULL; curr_des = NL_NEXT (curr_des), first_p = FALSE) {
+        init_object = VARR_LAST (init_object_t, init_object_path);
+        if (first_p) {
+          VARR_POP (init_object_t, init_object_path);
+        } else {
+          if (init_object.container_type->mode == TM_ARR) {
+            curr_type = init_object.container_type->u.arr_type->el_type;
+          } else {
+            assert (init_object.container_type->mode == TM_STRUCT
+                    || init_object.container_type->mode == TM_UNION);
+            decl_t el_decl = init_object.u.curr_member->attr;
+            curr_type = el_decl->decl_spec.type;
+          }
+        }
         if (curr_des->code == N_FIELD_ID) {
           node_t id = NL_HEAD (curr_des->u.ops);
 
-          if (type->mode != TM_STRUCT && type->mode != TM_UNION) {
+          if (curr_type->mode != TM_STRUCT && curr_type->mode != TM_UNION) {
             error (c2m_ctx, POS (curr_des), "field name not in struct or union initializer");
-          } else if (!symbol_find (c2m_ctx, S_REGULAR, id, type->u.tag_type, &sym)) {
+          } else if (!symbol_find (c2m_ctx, S_REGULAR, id, curr_type->u.tag_type, &sym)) {
             error (c2m_ctx, POS (curr_des), "unknown field %s in initializer", id->u.s.s);
           } else {
-            process_init_field_designator (c2m_ctx, sym.def_node, init_object.container_type);
-            if (!update_path_and_do (c2m_ctx, check_initializer, mark, value, const_only_p, NULL,
-                                     POS (init), "struct/union"))
+            process_init_field_designator (c2m_ctx, sym.def_node, curr_type);
+            if (!update_path_and_do (c2m_ctx, NL_NEXT (curr_des) == NULL, check_initializer, mark,
+                                     value, const_only_p, NULL, POS (init), "struct/union"))
               break;
           }
-        } else if (type->mode != TM_ARR) {
+        } else if (curr_type->mode != TM_ARR) {
           error (c2m_ctx, POS (curr_des), "array index in initializer for non-array");
         } else if (!(cexpr = curr_des->attr)->const_p) {
           error (c2m_ctx, POS (curr_des), "nonconstant array index in initializer");
         } else if (!integer_type_p (cexpr->type)) {
           error (c2m_ctx, POS (curr_des), "array index in initializer not of integer type");
-        } else if (incomplete_type_p (c2m_ctx, type) && signed_integer_type_p (cexpr->type)
+        } else if (incomplete_type_p (c2m_ctx, curr_type) && signed_integer_type_p (cexpr->type)
                    && cexpr->u.i_val < 0) {
           error (c2m_ctx, POS (curr_des),
                  "negative array index in initializer for array without size");
-        } else if (size_val >= 0 && size_val <= cexpr->u.u_val) {
+        } else if ((arr_size_val = get_arr_type_size (c2m_ctx, curr_type)) >= 0
+                   && arr_size_val <= cexpr->u.u_val) {
           error (c2m_ctx, POS (curr_des), "array index in initializer exceeds array bounds");
         } else {
           init_object.u.curr_index = cexpr->u.i_val - 1; /* previous el */
-          init_object.designator_p = FALSE;
+          init_object.field_designator_p = FALSE;
+          init_object.container_type = curr_type;
           VARR_PUSH (init_object_t, init_object_path, init_object);
-          if (!update_path_and_do (c2m_ctx, check_initializer, mark, value, const_only_p,
-                                   &max_index, POS (init), "array"))
+          if (!update_path_and_do (c2m_ctx, NL_NEXT (curr_des) == NULL, check_initializer, mark,
+                                   value, const_only_p, first_p ? &max_index : NULL, POS (init),
+                                   "array"))
             break;
         }
       }
@@ -7610,10 +7712,9 @@ check_one_value:
     type->u.arr_type = arr_type;
     size_node = type->u.arr_type->size;
     type->u.arr_type->size
-      = (max_index < MIR_INT_MAX
-           ? new_i_node (c2m_ctx, max_index + 1, POS (size_node))
-           : max_index < MIR_LONG_MAX ? new_l_node (c2m_ctx, max_index + 1, POS (size_node))
-                                      : new_ll_node (c2m_ctx, max_index + 1, POS (size_node)));
+      = (max_index < MIR_INT_MAX    ? new_i_node (c2m_ctx, max_index + 1, POS (size_node))
+         : max_index < MIR_LONG_MAX ? new_l_node (c2m_ctx, max_index + 1, POS (size_node))
+                                    : new_ll_node (c2m_ctx, max_index + 1, POS (size_node)));
     check (c2m_ctx, type->u.arr_type->size, NULL);
     make_type_complete (c2m_ctx, type);
   }
@@ -7724,6 +7825,7 @@ static struct type *adjust_type (c2m_ctx_t c2m_ctx, struct type *type) {
   res->mode = TM_PTR;
   res->pos_node = type->pos_node;
   if (type->mode == TM_FUNC) {
+    res->func_type_before_adjustment_p = TRUE;
     res->u.ptr_type = type;
   } else {
     res->arr_type = type;
@@ -7830,13 +7932,13 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, node_t op1, no
         convert_value (e2, &t);
         e->const_p = TRUE;
         if (signed_integer_type_p (&t))
-          e->u.i_val = (r->code == N_AND ? e1->u.i_val & e2->u.i_val
-                                         : r->code == N_OR ? e1->u.i_val | e2->u.i_val
-                                                           : e1->u.i_val ^ e2->u.i_val);
+          e->u.i_val = (r->code == N_AND  ? e1->u.i_val & e2->u.i_val
+                        : r->code == N_OR ? e1->u.i_val | e2->u.i_val
+                                          : e1->u.i_val ^ e2->u.i_val);
         else
-          e->u.u_val = (r->code == N_AND ? e1->u.u_val & e2->u.u_val
-                                         : r->code == N_OR ? e1->u.u_val | e2->u.u_val
-                                                           : e1->u.u_val ^ e2->u.u_val);
+          e->u.u_val = (r->code == N_AND  ? e1->u.u_val & e2->u.u_val
+                        : r->code == N_OR ? e1->u.u_val | e2->u.u_val
+                                          : e1->u.u_val ^ e2->u.u_val);
       }
     }
     break;
@@ -8050,7 +8152,7 @@ static void classify_node (node_t n, int *expr_attr_p, int *stmt_p) {
   switch (n->code) {
     REP8 (NODE_CASE, I, L, LL, U, UL, ULL, F, D)
     REP7 (NODE_CASE, LD, CH, CH16, CH32, STR, STR16, STR32)
-    REP5 (NODE_CASE, ID, COMMA, ANDAND, OROR, EQ)
+    REP6 (NODE_CASE, ID, COMMA, ANDAND, OROR, EQ, STMTEXPR)
     REP8 (NODE_CASE, NE, LT, LE, GT, GE, ASSIGN, BITWISE_NOT, NOT)
     REP8 (NODE_CASE, AND, AND_ASSIGN, OR, OR_ASSIGN, XOR, XOR_ASSIGN, LSH, LSH_ASSIGN)
     REP8 (NODE_CASE, RSH, RSH_ASSIGN, ADD, ADD_ASSIGN, SUB, SUB_ASSIGN, MUL, MUL_ASSIGN)
@@ -8169,9 +8271,18 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
   }
 }
 
-#define BUILTIN_VA_START "__builtin_va_start"
-#define BUILTIN_VA_ARG "__builtin_va_arg"
-#define ALLOCA "alloca"
+#define BUILTIN_VA_START \
+  (const char *[]) { "__builtin_va_start", NULL }
+#define BUILTIN_VA_ARG \
+  (const char *[]) { "__builtin_va_arg", NULL }
+#define ALLOCA \
+  (const char *[]) { "alloca", "__builtin_alloca", NULL }
+
+static int str_eq_p (const char *str, const char *v[]) {
+  for (int i = 0; v[i] != NULL; i++)
+    if (strcmp (v[i], str) == 0) return TRUE;
+  return FALSE;
+}
 
 static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
@@ -8286,13 +8397,15 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       decl->used_p = TRUE;
       assert (decl->decl_spec.type->mode == TM_FUNC);
       *e->type = *decl->decl_spec.type;
-    } else {
-      assert (op1->code == N_ENUM_CONST && aux_node && aux_node->code == N_ENUM);
+    } else if (op1->code == N_ENUM_CONST) {
+      assert (aux_node && aux_node->code == N_ENUM);
       e->type->mode = TM_ENUM;
       e->type->pos_node = r;
       e->type->u.tag_type = aux_node;
       e->const_p = TRUE;
       e->u.i_val = ((struct enum_value *) op1->attr)->u.i_val;
+    } else { /* it is a member reference inside struct/union */
+      assert (op1->code == N_MEMBER);
     }
     break;
   }
@@ -8359,15 +8472,12 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
         error (c2m_ctx, POS (r), "pointer to atomic type as a comparison operand");
       } else if (e1->const_p && e2->const_p) {
         e->const_p = TRUE;
-        e->u.i_val = (r->code == N_EQ
-                        ? e1->u.u_val == e2->u.u_val
-                        : r->code == N_NE
-                            ? e1->u.u_val != e2->u.u_val
-                            : r->code == N_LT
-                                ? e1->u.u_val < e2->u.u_val
-                                : r->code == N_LE ? e1->u.u_val <= e2->u.u_val
-                                                  : r->code == N_GT ? e1->u.u_val > e2->u.u_val
-                                                                    : e1->u.u_val >= e2->u.u_val);
+        e->u.i_val = (r->code == N_EQ   ? e1->u.u_val == e2->u.u_val
+                      : r->code == N_NE ? e1->u.u_val != e2->u.u_val
+                      : r->code == N_LT ? e1->u.u_val < e2->u.u_val
+                      : r->code == N_LE ? e1->u.u_val <= e2->u.u_val
+                      : r->code == N_GT ? e1->u.u_val > e2->u.u_val
+                                        : e1->u.u_val >= e2->u.u_val);
       }
     } else if (arithmetic_type_p (t1) && arithmetic_type_p (t2)) {
       if (e1->const_p && e2->const_p) {
@@ -8376,35 +8486,26 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
         convert_value (e2, &t);
         e->const_p = TRUE;
         if (floating_type_p (&t))
-          e->u.i_val = (r->code == N_EQ
-                          ? e1->u.d_val == e2->u.d_val
-                          : r->code == N_NE
-                              ? e1->u.d_val != e2->u.d_val
-                              : r->code == N_LT
-                                  ? e1->u.d_val < e2->u.d_val
-                                  : r->code == N_LE ? e1->u.d_val <= e2->u.d_val
-                                                    : r->code == N_GT ? e1->u.d_val > e2->u.d_val
-                                                                      : e1->u.d_val >= e2->u.d_val);
+          e->u.i_val = (r->code == N_EQ   ? e1->u.d_val == e2->u.d_val
+                        : r->code == N_NE ? e1->u.d_val != e2->u.d_val
+                        : r->code == N_LT ? e1->u.d_val < e2->u.d_val
+                        : r->code == N_LE ? e1->u.d_val <= e2->u.d_val
+                        : r->code == N_GT ? e1->u.d_val > e2->u.d_val
+                                          : e1->u.d_val >= e2->u.d_val);
         else if (signed_integer_type_p (&t))
-          e->u.i_val = (r->code == N_EQ
-                          ? e1->u.i_val == e2->u.i_val
-                          : r->code == N_NE
-                              ? e1->u.i_val != e2->u.i_val
-                              : r->code == N_LT
-                                  ? e1->u.i_val < e2->u.i_val
-                                  : r->code == N_LE ? e1->u.i_val <= e2->u.i_val
-                                                    : r->code == N_GT ? e1->u.i_val > e2->u.i_val
-                                                                      : e1->u.i_val >= e2->u.i_val);
+          e->u.i_val = (r->code == N_EQ   ? e1->u.i_val == e2->u.i_val
+                        : r->code == N_NE ? e1->u.i_val != e2->u.i_val
+                        : r->code == N_LT ? e1->u.i_val < e2->u.i_val
+                        : r->code == N_LE ? e1->u.i_val <= e2->u.i_val
+                        : r->code == N_GT ? e1->u.i_val > e2->u.i_val
+                                          : e1->u.i_val >= e2->u.i_val);
         else
-          e->u.i_val = (r->code == N_EQ
-                          ? e1->u.u_val == e2->u.u_val
-                          : r->code == N_NE
-                              ? e1->u.u_val != e2->u.u_val
-                              : r->code == N_LT
-                                  ? e1->u.u_val < e2->u.u_val
-                                  : r->code == N_LE ? e1->u.u_val <= e2->u.u_val
-                                                    : r->code == N_GT ? e1->u.u_val > e2->u.u_val
-                                                                      : e1->u.u_val >= e2->u.u_val);
+          e->u.i_val = (r->code == N_EQ   ? e1->u.u_val == e2->u.u_val
+                        : r->code == N_NE ? e1->u.u_val != e2->u.u_val
+                        : r->code == N_LT ? e1->u.u_val < e2->u.u_val
+                        : r->code == N_LE ? e1->u.u_val <= e2->u.u_val
+                        : r->code == N_GT ? e1->u.u_val > e2->u.u_val
+                                          : e1->u.u_val >= e2->u.u_val);
       }
     } else {
       error (c2m_ctx, POS (r), "invalid types of comparison operands");
@@ -8582,8 +8683,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
 
       *e->type = *((struct expr *) deref_op->attr)->type;
       break;
-    } else if (e1->type->mode == TM_PTR
-               && (e1->type->u.ptr_type->mode == TM_FUNC || e1->type->arr_type != NULL)) {
+    } else if (e1->type->mode == TM_PTR && e1->type->arr_type != NULL) {
+      *e->type = *e1->type;
+      break;
+    } else if (e1->type->mode == TM_PTR && e1->type->u.ptr_type->mode == TM_FUNC
+               && e1->type->func_type_before_adjustment_p) {
       *e->type = *e1->type;
       break;
     } else if (!e1->lvalue_node) {
@@ -8835,7 +8939,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     void_p = void_type_p (decl_spec->type);
     if (!void_p && !scalar_type_p (decl_spec->type)) {
       error (c2m_ctx, POS (r), "conversion to non-scalar type requested");
-    } else if (!scalar_type_p (t2) && !void_type_p (t2)) {
+    } else if (!void_p && !scalar_type_p (t2) && !void_type_p (t2)) {
       error (c2m_ctx, POS (r), "conversion of non-scalar value requested");
     } else if (t2->mode == TM_PTR && floating_type_p (decl_spec->type)) {
       error (c2m_ctx, POS (r), "conversion of a pointer to floating value requested");
@@ -8897,10 +9001,10 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     int builtin_call_p, alloca_p, va_arg_p = FALSE, va_start_p = FALSE;
 
     op1 = NL_HEAD (r->u.ops);
-    alloca_p = op1->code == N_ID && strcmp (op1->u.s.s, ALLOCA) == 0;
+    alloca_p = op1->code == N_ID && str_eq_p (op1->u.s.s, ALLOCA);
     if (op1->code == N_ID && find_def (c2m_ctx, S_REGULAR, op1, curr_scope, NULL) == NULL) {
-      va_arg_p = strcmp (op1->u.s.s, BUILTIN_VA_ARG) == 0;
-      va_start_p = strcmp (op1->u.s.s, BUILTIN_VA_START) == 0;
+      va_arg_p = str_eq_p (op1->u.s.s, BUILTIN_VA_ARG);
+      va_start_p = str_eq_p (op1->u.s.s, BUILTIN_VA_START);
       if (!va_arg_p && !va_start_p && !alloca_p) {
         /* N_SPEC_DECL (N_SHARE (N_LIST (N_INT)), N_DECL (N_ID, N_FUNC (N_LIST)), N_IGNORE) */
         spec_list = new_node (c2m_ctx, N_LIST);
@@ -8924,6 +9028,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     if (!builtin_call_p) VARR_PUSH (node_t, call_nodes, r);
     arg_list = NL_NEXT (op1);
     if (builtin_call_p) {
+      if (func_block_scope != NULL && (va_arg_p || va_start_p))
+        ((struct node_scope *) func_block_scope->attr)->stack_var_p = TRUE;
       for (arg = NL_HEAD (arg_list->u.ops); arg != NULL; arg = NL_NEXT (arg))
         check (c2m_ctx, arg, r);
       init_type (&res_type);
@@ -8936,11 +9042,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       }
       ret_type = &res_type;
       if (va_start_p && NL_LENGTH (arg_list->u.ops) != 1) {
-        error (c2m_ctx, POS (op1), "wrong number of arguments in %s call", BUILTIN_VA_START);
+        error (c2m_ctx, POS (op1), "wrong number of arguments in %s call", op1->u.s.s);
       } else if (alloca_p && NL_LENGTH (arg_list->u.ops) != 1) {
-        error (c2m_ctx, POS (op1), "wrong number of arguments in %s call", ALLOCA);
+        error (c2m_ctx, POS (op1), "wrong number of arguments in %s call", op1->u.s.s);
       } else if (va_arg_p && NL_LENGTH (arg_list->u.ops) != 2) {
-        error (c2m_ctx, POS (op1), "wrong number of arguments in %s call", BUILTIN_VA_ARG);
+        error (c2m_ctx, POS (op1), "wrong number of arguments in %s call", op1->u.s.s);
       } else {
         /* first argument type ??? */
         if (va_arg_p) {
@@ -8973,7 +9079,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     }
     if (ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION) {
       set_type_layout (c2m_ctx, ret_type);
-      if (!builtin_call_p) update_call_arg_area_offset (c2m_ctx, ret_type, TRUE);
+      if (!builtin_call_p && curr_scope != top_scope)
+        update_call_arg_area_offset (c2m_ctx, ret_type, TRUE);
     }
     if (builtin_call_p) break;
     param_list = func_type->param_list;
@@ -9069,6 +9176,12 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     if (declarator->code != N_IGNORE) {
       create_decl (c2m_ctx, curr_scope, r, decl_spec, NULL, initializer,
                    context != NULL && context->code == N_FUNC);
+      decl_t decl = r->attr;
+      if ((initializer == NULL || initializer->code == N_IGNORE) && !decl->decl_spec.typedef_p
+          && !decl->decl_spec.extern_p
+          && (decl->decl_spec.type->mode == TM_STRUCT || decl->decl_spec.type->mode == TM_UNION)) {
+        VARR_PUSH (node_t, possible_incomplete_decls, r);
+      }
     } else if (decl_spec.type->mode == TM_STRUCT || decl_spec.type->mode == TM_UNION) {
       if (NL_HEAD (decl_spec.type->u.tag_type->u.ops)->code != N_ID)
         error (c2m_ctx, POS (r), "unnamed struct/union with no instances");
@@ -9178,8 +9291,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     symbol_t sym;
     struct node_scope *ns;
 
-    if (strcmp (id->u.s.s, ALLOCA) == 0 || strcmp (id->u.s.s, BUILTIN_VA_START) == 0
-        || strcmp (id->u.s.s, BUILTIN_VA_ARG) == 0) {
+    if (str_eq_p (id->u.s.s, ALLOCA) || str_eq_p (id->u.s.s, BUILTIN_VA_START)
+        || str_eq_p (id->u.s.s, BUILTIN_VA_ARG)) {
       error (c2m_ctx, POS (id), "%s is a builtin function", id->u.s.s);
       break;
     }
@@ -9196,6 +9309,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     /* Process parameter identifier list:  */
     assert (declarator->code == N_DECL);
     func = NL_HEAD (NL_EL (declarator->u.ops, 1)->u.ops);
+    /* func can be NULL or non-func in case of error */
+    if (n_errors != 0 && (func == NULL || func->code != N_FUNC)) break;
     assert (func != NULL && func->code == N_FUNC);
     param_list = NL_HEAD (func->u.ops);
     for (p = NL_HEAD (param_list->u.ops); p != NULL; p = next_p) {
@@ -9246,6 +9361,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       if (p->code == N_ST_ASSERT) continue;
       assert (p->code == N_SPEC_DECL);
       param_declarator = NL_EL (p->u.ops, 1);
+      if (param_declarator->code == N_IGNORE) continue;
       assert (param_declarator->code == N_DECL);
       param_id = NL_HEAD (param_declarator->u.ops);
       assert (param_id->code == N_ID);
@@ -9299,6 +9415,25 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       set_type_layout (c2m_ctx, decl_spec.type);
       check_decl_align (c2m_ctx, r->attr);
     }
+    break;
+  }
+  case N_STMTEXPR: {
+    node_t block = NL_HEAD (r->u.ops);
+    if (c2m_options->pedantic_p) {
+      error (c2m_ctx, POS (r), "statement expression is not a part of C11 standard");
+      break;
+    }
+    check (c2m_ctx, block, r);
+    node_t last_stmt = NL_TAIL (NL_EL (block->u.ops, 1)->u.ops);
+    if (!last_stmt || last_stmt->code != N_EXPR) {
+      error (c2m_ctx, POS (r), "last statement in statement expression is not an expression");
+      break;
+    }
+    node_t expr = NL_EL (last_stmt->u.ops, 1);
+    e1 = expr->attr;
+    t1 = e1->type;
+    e = create_expr (c2m_ctx, r);
+    *e->type = *t1;
     break;
   }
   case N_BLOCK:
@@ -9573,8 +9708,17 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
 }
 
 static void do_context (c2m_ctx_t c2m_ctx, node_t r) {
+  check_ctx_t check_ctx = c2m_ctx->check_ctx;
+
   VARR_TRUNC (node_t, call_nodes, 0);
+  VARR_TRUNC (node_t, possible_incomplete_decls, 0);
   check (c2m_ctx, r, NULL);
+  for (size_t i = 0; i < VARR_LENGTH (node_t, possible_incomplete_decls); i++) {
+    node_t spec_decl = VARR_GET (node_t, possible_incomplete_decls, i);
+    decl_t decl = spec_decl->attr;
+    if (incomplete_type_p (c2m_ctx, decl->decl_spec.type))
+      error (c2m_ctx, POS (spec_decl), "incomplete struct or union");
+  }
 }
 
 static void context_init (c2m_ctx_t c2m_ctx) {
@@ -9591,6 +9735,7 @@ static void context_init (c2m_ctx_t c2m_ctx) {
   curr_unnamed_anon_struct_union_member = NULL;
   HTAB_CREATE (case_t, case_tab, 100, case_hash, case_eq, NULL);
   VARR_CREATE (decl_t, func_decls_for_allocation, 1024);
+  VARR_CREATE (node_t, possible_incomplete_decls, 512);
 }
 
 static void context_finish (c2m_ctx_t c2m_ctx) {
@@ -9602,6 +9747,7 @@ static void context_finish (c2m_ctx_t c2m_ctx) {
   symbol_finish (c2m_ctx);
   if (case_tab != NULL) HTAB_DESTROY (case_t, case_tab);
   if (func_decls_for_allocation != NULL) VARR_DESTROY (decl_t, func_decls_for_allocation);
+  if (possible_incomplete_decls != NULL) VARR_DESTROY (node_t, possible_incomplete_decls);
   free (c2m_ctx->check_ctx);
 }
 
@@ -9647,6 +9793,7 @@ DEF_VARR (int);
 DEF_VARR (MIR_type_t);
 
 struct init_el {
+  c2m_ctx_t c2m_ctx; /* for sorting */
   mir_size_t num, offset;
   decl_t member_decl; /* NULL for non-member initialization  */
   struct type *el_type;
@@ -9666,6 +9813,7 @@ struct gen_ctx {
   HTAB (reg_var_t) * reg_var_tab;
   int reg_free_mark;
   MIR_label_t continue_label, break_label;
+  op_t top_gen_last_op;
   struct {
     int res_ref_p; /* flag of returning an aggregate by reference */
     VARR (MIR_type_t) * ret_types;
@@ -9688,6 +9836,7 @@ struct gen_ctx {
 #define reg_free_mark gen_ctx->reg_free_mark
 #define continue_label gen_ctx->continue_label
 #define break_label gen_ctx->break_label
+#define top_gen_last_op gen_ctx->top_gen_last_op
 #define proto_info gen_ctx->proto_info
 #define init_els gen_ctx->init_els
 #define memset_proto gen_ctx->memset_proto
@@ -9770,16 +9919,14 @@ static MIR_type_t reg_type (c2m_ctx_t c2m_ctx, MIR_reg_t reg) {
   MIR_type_t res;
 
   if (strcmp (n, FP_NAME) == 0 || strcmp (n, RET_ADDR_NAME) == 0) return MIR_POINTER_TYPE;
-  res = (n[0] == 'I'
-           ? MIR_T_I64
-           : n[0] == 'U'
-               ? MIR_T_U64
-               : n[0] == 'i' ? MIR_T_I32
-                             : n[0] == 'u' ? MIR_T_U32
-                                           : n[0] == 'f' ? MIR_T_F
-                                                         : n[0] == 'd' ? MIR_T_D
-                                                                       : n[0] == 'D' ? MIR_T_LD
-                                                                                     : MIR_T_BOUND);
+  res = (n[0] == 'I'   ? MIR_T_I64
+         : n[0] == 'U' ? MIR_T_U64
+         : n[0] == 'i' ? MIR_T_I32
+         : n[0] == 'u' ? MIR_T_U32
+         : n[0] == 'f' ? MIR_T_F
+         : n[0] == 'd' ? MIR_T_D
+         : n[0] == 'D' ? MIR_T_LD
+                       : MIR_T_BOUND);
   assert (res != MIR_T_BOUND);
   return res;
 }
@@ -9793,14 +9940,13 @@ static op_t get_new_temp (c2m_ctx_t c2m_ctx, MIR_type_t t) {
   assert (t == MIR_T_I64 || t == MIR_T_U64 || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_F
           || t == MIR_T_D || t == MIR_T_LD);
   sprintf (reg_name,
-           t == MIR_T_I64
-             ? "I_%u"
-             : t == MIR_T_U64
-                 ? "U_%u"
-                 : t == MIR_T_I32
-                     ? "i_%u"
-                     : t == MIR_T_U32 ? "u_%u"
-                                      : t == MIR_T_F ? "f_%u" : t == MIR_T_D ? "d_%u" : "D_%u",
+           t == MIR_T_I64   ? "I_%u"
+           : t == MIR_T_U64 ? "U_%u"
+           : t == MIR_T_I32 ? "i_%u"
+           : t == MIR_T_U32 ? "u_%u"
+           : t == MIR_T_F   ? "f_%u"
+           : t == MIR_T_D   ? "d_%u"
+                            : "D_%u",
            reg_free_mark++);
   reg = get_reg_var (c2m_ctx, t, reg_name).reg;
   return new_op (NULL, MIR_new_reg_op (ctx, reg));
@@ -9811,9 +9957,10 @@ static MIR_type_t get_int_mir_type (size_t size) {
 }
 
 static int MIR_UNUSED get_int_mir_type_size (MIR_type_t t) {
-  return (t == MIR_T_I8 || t == MIR_T_U8
-            ? 1
-            : t == MIR_T_I16 || t == MIR_T_U16 ? 2 : t == MIR_T_I32 || t == MIR_T_U32 ? 4 : 8);
+  return (t == MIR_T_I8 || t == MIR_T_U8     ? 1
+          : t == MIR_T_I16 || t == MIR_T_U16 ? 2
+          : t == MIR_T_I32 || t == MIR_T_U32 ? 4
+                                             : 8);
 }
 
 static MIR_type_t get_mir_type (c2m_ctx_t c2m_ctx, struct type *type) {
@@ -9832,8 +9979,9 @@ static MIR_type_t get_mir_type (c2m_ctx_t c2m_ctx, struct type *type) {
 }
 
 static MIR_type_t promote_mir_int_type (MIR_type_t t) {
-  return (t == MIR_T_I8 || t == MIR_T_I16 ? MIR_T_I32
-                                          : t == MIR_T_U8 || t == MIR_T_U16 ? MIR_T_U32 : t);
+  return (t == MIR_T_I8 || t == MIR_T_I16   ? MIR_T_I32
+          : t == MIR_T_U8 || t == MIR_T_U16 ? MIR_T_U32
+                                            : t);
 }
 
 static MIR_type_t get_op_type (c2m_ctx_t c2m_ctx, op_t op) {
@@ -9861,10 +10009,9 @@ static int push_const_val (c2m_ctx_t c2m_ctx, node_t r, op_t *res) {
   if (floating_type_p (e->type)) {
     /* MIR support only IEEE float and double */
     mir_type = get_mir_type (c2m_ctx, e->type);
-    *res = new_op (NULL, (mir_type == MIR_T_F
-                            ? MIR_new_float_op (ctx, e->u.d_val)
-                            : mir_type == MIR_T_D ? MIR_new_double_op (ctx, e->u.d_val)
-                                                  : MIR_new_ldouble_op (ctx, e->u.d_val)));
+    *res = new_op (NULL, (mir_type == MIR_T_F   ? MIR_new_float_op (ctx, e->u.d_val)
+                          : mir_type == MIR_T_D ? MIR_new_double_op (ctx, e->u.d_val)
+                                                : MIR_new_ldouble_op (ctx, e->u.d_val)));
   } else {
     assert (integer_type_p (e->type) || e->type->mode == TM_PTR);
     *res = new_op (NULL, (signed_integer_type_p (e->type) ? MIR_new_int_op (ctx, e->u.i_val)
@@ -9970,142 +10117,137 @@ static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
     if (op_type == MIR_T_D) goto double_val;
     if (op_type == MIR_T_LD) goto ldouble_val;
     if (t == MIR_T_I64) {
-      insn_code
-        = (op_type == MIR_T_I32
-             ? MIR_EXT32
-             : op_type == MIR_T_U32
-                 ? MIR_UEXT32
-                 : op_type == MIR_T_F
-                     ? MIR_F2I
-                     : op_type == MIR_T_D ? MIR_D2I
-                                          : op_type == MIR_T_LD ? MIR_LD2I : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_I32   ? MIR_EXT32
+                   : op_type == MIR_T_U32 ? MIR_UEXT32
+                   : op_type == MIR_T_F   ? MIR_F2I
+                   : op_type == MIR_T_D   ? MIR_D2I
+                   : op_type == MIR_T_LD  ? MIR_LD2I
+                                          : MIR_INSN_BOUND);
     } else if (t == MIR_T_U64) {
-      insn_code
-        = (op_type == MIR_T_I32
-             ? MIR_EXT32
-             : op_type == MIR_T_U32
-                 ? MIR_UEXT32
-                 : op_type == MIR_T_F
-                     ? MIR_F2I
-                     : op_type == MIR_T_D ? MIR_D2I
-                                          : op_type == MIR_T_LD ? MIR_LD2I : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_I32   ? MIR_EXT32
+                   : op_type == MIR_T_U32 ? MIR_UEXT32
+                   : op_type == MIR_T_F   ? MIR_F2I
+                   : op_type == MIR_T_D   ? MIR_D2I
+                   : op_type == MIR_T_LD  ? MIR_LD2I
+                                          : MIR_INSN_BOUND);
     } else if (t == MIR_T_I32) {
-      insn_code
-        = (op_type == MIR_T_F
-             ? MIR_F2I
-             : op_type == MIR_T_D ? MIR_D2I : op_type == MIR_T_LD ? MIR_LD2I : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_F    ? MIR_F2I
+                   : op_type == MIR_T_D  ? MIR_D2I
+                   : op_type == MIR_T_LD ? MIR_LD2I
+                                         : MIR_INSN_BOUND);
     } else if (t == MIR_T_U32) {
-      insn_code
-        = (op_type == MIR_T_F
-             ? MIR_F2I
-             : op_type == MIR_T_D ? MIR_D2I : op_type == MIR_T_LD ? MIR_LD2I : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_F    ? MIR_F2I
+                   : op_type == MIR_T_D  ? MIR_D2I
+                   : op_type == MIR_T_LD ? MIR_LD2I
+                                         : MIR_INSN_BOUND);
     } else if (t == MIR_T_I16) {
-      insn_code
-        = (op_type == MIR_T_F
-             ? MIR_F2I
-             : op_type == MIR_T_D ? MIR_D2I : op_type == MIR_T_LD ? MIR_LD2I : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_F    ? MIR_F2I
+                   : op_type == MIR_T_D  ? MIR_D2I
+                   : op_type == MIR_T_LD ? MIR_LD2I
+                                         : MIR_INSN_BOUND);
       insn_code2 = MIR_EXT16;
     } else if (t == MIR_T_U16) {
-      insn_code
-        = (op_type == MIR_T_F
-             ? MIR_F2I
-             : op_type == MIR_T_D ? MIR_D2I : op_type == MIR_T_LD ? MIR_LD2I : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_F    ? MIR_F2I
+                   : op_type == MIR_T_D  ? MIR_D2I
+                   : op_type == MIR_T_LD ? MIR_LD2I
+                                         : MIR_INSN_BOUND);
       insn_code2 = MIR_UEXT16;
     } else if (t == MIR_T_I8) {
-      insn_code
-        = (op_type == MIR_T_F
-             ? MIR_F2I
-             : op_type == MIR_T_D ? MIR_D2I : op_type == MIR_T_LD ? MIR_LD2I : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_F    ? MIR_F2I
+                   : op_type == MIR_T_D  ? MIR_D2I
+                   : op_type == MIR_T_LD ? MIR_LD2I
+                                         : MIR_INSN_BOUND);
       insn_code2 = MIR_EXT8;
     } else if (t == MIR_T_U8) {
-      insn_code
-        = (op_type == MIR_T_F
-             ? MIR_F2I
-             : op_type == MIR_T_D ? MIR_D2I : op_type == MIR_T_LD ? MIR_LD2I : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_F    ? MIR_F2I
+                   : op_type == MIR_T_D  ? MIR_D2I
+                   : op_type == MIR_T_LD ? MIR_LD2I
+                                         : MIR_INSN_BOUND);
       insn_code2 = MIR_UEXT8;
     } else if (t == MIR_T_F) {
-      insn_code
-        = (op_type == MIR_T_I32 ? MIR_EXT32 : op_type == MIR_T_U32 ? MIR_UEXT32 : MIR_INSN_BOUND);
-      insn_code2 = (op_type == MIR_T_I64 || op_type == MIR_T_I32
-                      ? MIR_I2F
-                      : op_type == MIR_T_U64 || op_type == MIR_T_U32 ? MIR_UI2F : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_I32   ? MIR_EXT32
+                   : op_type == MIR_T_U32 ? MIR_UEXT32
+                                          : MIR_INSN_BOUND);
+      insn_code2 = (op_type == MIR_T_I64 || op_type == MIR_T_I32   ? MIR_I2F
+                    : op_type == MIR_T_U64 || op_type == MIR_T_U32 ? MIR_UI2F
+                                                                   : MIR_INSN_BOUND);
     } else if (t == MIR_T_D) {
-      insn_code
-        = (op_type == MIR_T_I32 ? MIR_EXT32 : op_type == MIR_T_U32 ? MIR_UEXT32 : MIR_INSN_BOUND);
-      insn_code2 = (op_type == MIR_T_I64 || op_type == MIR_T_I32
-                      ? MIR_I2D
-                      : op_type == MIR_T_U64 || op_type == MIR_T_U32 ? MIR_UI2D : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_I32   ? MIR_EXT32
+                   : op_type == MIR_T_U32 ? MIR_UEXT32
+                                          : MIR_INSN_BOUND);
+      insn_code2 = (op_type == MIR_T_I64 || op_type == MIR_T_I32   ? MIR_I2D
+                    : op_type == MIR_T_U64 || op_type == MIR_T_U32 ? MIR_UI2D
+                                                                   : MIR_INSN_BOUND);
     } else if (t == MIR_T_LD) {
-      insn_code
-        = (op_type == MIR_T_I32 ? MIR_EXT32 : op_type == MIR_T_U32 ? MIR_UEXT32 : MIR_INSN_BOUND);
-      insn_code2 = (op_type == MIR_T_I64 || op_type == MIR_T_I32
-                      ? MIR_I2LD
-                      : op_type == MIR_T_U64 || op_type == MIR_T_U32 ? MIR_UI2LD : MIR_INSN_BOUND);
+      insn_code = (op_type == MIR_T_I32   ? MIR_EXT32
+                   : op_type == MIR_T_U32 ? MIR_UEXT32
+                                          : MIR_INSN_BOUND);
+      insn_code2 = (op_type == MIR_T_I64 || op_type == MIR_T_I32   ? MIR_I2LD
+                    : op_type == MIR_T_U64 || op_type == MIR_T_U32 ? MIR_UI2LD
+                                                                   : MIR_INSN_BOUND);
     }
     break;
   case MIR_OP_INT:
-    insn_code
-      = (t == MIR_T_I8
-           ? MIR_EXT8
-           : t == MIR_T_U8
-               ? MIR_UEXT8
-               : t == MIR_T_I16
-                   ? MIR_EXT16
-                   : t == MIR_T_U16
-                       ? MIR_UEXT16
-                       : t == MIR_T_F
-                           ? MIR_I2F
-                           : t == MIR_T_D ? MIR_I2D : t == MIR_T_LD ? MIR_I2LD : MIR_INSN_BOUND);
+    insn_code = (t == MIR_T_I8    ? MIR_EXT8
+                 : t == MIR_T_U8  ? MIR_UEXT8
+                 : t == MIR_T_I16 ? MIR_EXT16
+                 : t == MIR_T_U16 ? MIR_UEXT16
+                 : t == MIR_T_F   ? MIR_I2F
+                 : t == MIR_T_D   ? MIR_I2D
+                 : t == MIR_T_LD  ? MIR_I2LD
+                                  : MIR_INSN_BOUND);
     break;
   case MIR_OP_UINT:
-    insn_code
-      = (t == MIR_T_I8
-           ? MIR_EXT8
-           : t == MIR_T_U8
-               ? MIR_UEXT8
-               : t == MIR_T_I16
-                   ? MIR_EXT16
-                   : t == MIR_T_U16
-                       ? MIR_UEXT16
-                       : t == MIR_T_F
-                           ? MIR_UI2F
-                           : t == MIR_T_D ? MIR_UI2D : t == MIR_T_LD ? MIR_UI2LD : MIR_INSN_BOUND);
+    insn_code = (t == MIR_T_I8    ? MIR_EXT8
+                 : t == MIR_T_U8  ? MIR_UEXT8
+                 : t == MIR_T_I16 ? MIR_EXT16
+                 : t == MIR_T_U16 ? MIR_UEXT16
+                 : t == MIR_T_F   ? MIR_UI2F
+                 : t == MIR_T_D   ? MIR_UI2D
+                 : t == MIR_T_LD  ? MIR_UI2LD
+                                  : MIR_INSN_BOUND);
     break;
   case MIR_OP_FLOAT:
   float_val:
     insn_code = (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16
                      || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64
                    ? MIR_F2I
-                   : t == MIR_T_D ? MIR_F2D : t == MIR_T_LD ? MIR_F2LD : MIR_INSN_BOUND);
-    insn_code2 = (t == MIR_T_I8 ? MIR_EXT8
-                                : t == MIR_T_U8 ? MIR_UEXT8
-                                                : t == MIR_T_I16
-                                                    ? MIR_EXT16
-                                                    : t == MIR_T_U16 ? MIR_UEXT16 : MIR_INSN_BOUND);
+                 : t == MIR_T_D  ? MIR_F2D
+                 : t == MIR_T_LD ? MIR_F2LD
+                                 : MIR_INSN_BOUND);
+    insn_code2 = (t == MIR_T_I8    ? MIR_EXT8
+                  : t == MIR_T_U8  ? MIR_UEXT8
+                  : t == MIR_T_I16 ? MIR_EXT16
+                  : t == MIR_T_U16 ? MIR_UEXT16
+                                   : MIR_INSN_BOUND);
     break;
   case MIR_OP_DOUBLE:
   double_val:
     insn_code = (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16
                      || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64
                    ? MIR_D2I
-                   : t == MIR_T_F ? MIR_D2F : t == MIR_T_LD ? MIR_D2LD : MIR_INSN_BOUND);
-    insn_code2 = (t == MIR_T_I8 ? MIR_EXT8
-                                : t == MIR_T_U8 ? MIR_UEXT8
-                                                : t == MIR_T_I16
-                                                    ? MIR_EXT16
-                                                    : t == MIR_T_U16 ? MIR_UEXT16 : MIR_INSN_BOUND);
+                 : t == MIR_T_F  ? MIR_D2F
+                 : t == MIR_T_LD ? MIR_D2LD
+                                 : MIR_INSN_BOUND);
+    insn_code2 = (t == MIR_T_I8    ? MIR_EXT8
+                  : t == MIR_T_U8  ? MIR_UEXT8
+                  : t == MIR_T_I16 ? MIR_EXT16
+                  : t == MIR_T_U16 ? MIR_UEXT16
+                                   : MIR_INSN_BOUND);
     break;
   case MIR_OP_LDOUBLE:
   ldouble_val:
     insn_code = (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16
                      || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64
                    ? MIR_LD2I
-                   : t == MIR_T_F ? MIR_LD2F : t == MIR_T_D ? MIR_LD2D : MIR_INSN_BOUND);
-    insn_code2 = (t == MIR_T_I8 ? MIR_EXT8
-                                : t == MIR_T_U8 ? MIR_UEXT8
-                                                : t == MIR_T_I16
-                                                    ? MIR_EXT16
-                                                    : t == MIR_T_U16 ? MIR_UEXT16 : MIR_INSN_BOUND);
+                 : t == MIR_T_F ? MIR_LD2F
+                 : t == MIR_T_D ? MIR_LD2D
+                                : MIR_INSN_BOUND);
+    insn_code2 = (t == MIR_T_I8    ? MIR_EXT8
+                  : t == MIR_T_U8  ? MIR_UEXT8
+                  : t == MIR_T_I16 ? MIR_EXT16
+                  : t == MIR_T_U16 ? MIR_UEXT16
+                                   : MIR_INSN_BOUND);
     break;
   default: break;
   }
@@ -10267,45 +10409,42 @@ static MIR_insn_code_t get_mir_type_insn_code (c2m_ctx_t c2m_ctx, struct type *t
   case N_POST_INC:
   case N_ADD:
   case N_ADD_ASSIGN:
-    return (t == MIR_T_F
-              ? MIR_FADD
-              : t == MIR_T_D
-                  ? MIR_DADD
-                  : t == MIR_T_LD ? MIR_LDADD
-                                  : t == MIR_T_I64 || t == MIR_T_U64 ? MIR_ADD : MIR_ADDS);
+    return (t == MIR_T_F                       ? MIR_FADD
+            : t == MIR_T_D                     ? MIR_DADD
+            : t == MIR_T_LD                    ? MIR_LDADD
+            : t == MIR_T_I64 || t == MIR_T_U64 ? MIR_ADD
+                                               : MIR_ADDS);
   case N_DEC:
   case N_POST_DEC:
   case N_SUB:
   case N_SUB_ASSIGN:
-    return (t == MIR_T_F
-              ? MIR_FSUB
-              : t == MIR_T_D
-                  ? MIR_DSUB
-                  : t == MIR_T_LD ? MIR_LDSUB
-                                  : t == MIR_T_I64 || t == MIR_T_U64 ? MIR_SUB : MIR_SUBS);
+    return (t == MIR_T_F                       ? MIR_FSUB
+            : t == MIR_T_D                     ? MIR_DSUB
+            : t == MIR_T_LD                    ? MIR_LDSUB
+            : t == MIR_T_I64 || t == MIR_T_U64 ? MIR_SUB
+                                               : MIR_SUBS);
   case N_MUL:
   case N_MUL_ASSIGN:
-    return (t == MIR_T_F
-              ? MIR_FMUL
-              : t == MIR_T_D
-                  ? MIR_DMUL
-                  : t == MIR_T_LD ? MIR_LDMUL
-                                  : t == MIR_T_I64 || t == MIR_T_U64 ? MIR_MUL : MIR_MULS);
+    return (t == MIR_T_F                       ? MIR_FMUL
+            : t == MIR_T_D                     ? MIR_DMUL
+            : t == MIR_T_LD                    ? MIR_LDMUL
+            : t == MIR_T_I64 || t == MIR_T_U64 ? MIR_MUL
+                                               : MIR_MULS);
   case N_DIV:
   case N_DIV_ASSIGN:
-    return (t == MIR_T_F
-              ? MIR_FDIV
-              : t == MIR_T_D
-                  ? MIR_DDIV
-                  : t == MIR_T_LD
-                      ? MIR_LDDIV
-                      : t == MIR_T_I64
-                          ? MIR_DIV
-                          : t == MIR_T_U64 ? MIR_UDIV : t == MIR_T_I32 ? MIR_DIVS : MIR_UDIVS);
+    return (t == MIR_T_F     ? MIR_FDIV
+            : t == MIR_T_D   ? MIR_DDIV
+            : t == MIR_T_LD  ? MIR_LDDIV
+            : t == MIR_T_I64 ? MIR_DIV
+            : t == MIR_T_U64 ? MIR_UDIV
+            : t == MIR_T_I32 ? MIR_DIVS
+                             : MIR_UDIVS);
   case N_MOD:
   case N_MOD_ASSIGN:
-    return (t == MIR_T_I64 ? MIR_MOD
-                           : t == MIR_T_U64 ? MIR_UMOD : t == MIR_T_I32 ? MIR_MODS : MIR_UMODS);
+    return (t == MIR_T_I64   ? MIR_MOD
+            : t == MIR_T_U64 ? MIR_UMOD
+            : t == MIR_T_I32 ? MIR_MODS
+                             : MIR_UMODS);
   case N_AND:
   case N_AND_ASSIGN: return (t == MIR_T_I64 || t == MIR_T_U64 ? MIR_AND : MIR_ANDS);
   case N_OR:
@@ -10316,60 +10455,54 @@ static MIR_insn_code_t get_mir_type_insn_code (c2m_ctx_t c2m_ctx, struct type *t
   case N_LSH_ASSIGN: return (t == MIR_T_I64 || t == MIR_T_U64 ? MIR_LSH : MIR_LSHS);
   case N_RSH:
   case N_RSH_ASSIGN:
-    return (t == MIR_T_I64 ? MIR_RSH
-                           : t == MIR_T_U64 ? MIR_URSH : t == MIR_T_I32 ? MIR_RSHS : MIR_URSHS);
+    return (t == MIR_T_I64   ? MIR_RSH
+            : t == MIR_T_U64 ? MIR_URSH
+            : t == MIR_T_I32 ? MIR_RSHS
+                             : MIR_URSHS);
   case N_EQ:
-    return (t == MIR_T_F
-              ? MIR_FEQ
-              : t == MIR_T_D
-                  ? MIR_DEQ
-                  : t == MIR_T_LD ? MIR_LDEQ : t == MIR_T_I64 || t == MIR_T_U64 ? MIR_EQ : MIR_EQS);
+    return (t == MIR_T_F                       ? MIR_FEQ
+            : t == MIR_T_D                     ? MIR_DEQ
+            : t == MIR_T_LD                    ? MIR_LDEQ
+            : t == MIR_T_I64 || t == MIR_T_U64 ? MIR_EQ
+                                               : MIR_EQS);
   case N_NE:
-    return (t == MIR_T_F
-              ? MIR_FNE
-              : t == MIR_T_D
-                  ? MIR_DNE
-                  : t == MIR_T_LD ? MIR_LDNE : t == MIR_T_I64 || t == MIR_T_U64 ? MIR_NE : MIR_NES);
+    return (t == MIR_T_F                       ? MIR_FNE
+            : t == MIR_T_D                     ? MIR_DNE
+            : t == MIR_T_LD                    ? MIR_LDNE
+            : t == MIR_T_I64 || t == MIR_T_U64 ? MIR_NE
+                                               : MIR_NES);
   case N_LT:
-    return (t == MIR_T_F
-              ? MIR_FLT
-              : t == MIR_T_D
-                  ? MIR_DLT
-                  : t == MIR_T_LD
-                      ? MIR_LDLT
-                      : t == MIR_T_I64
-                          ? MIR_LT
-                          : t == MIR_T_U64 ? MIR_ULT : t == MIR_T_I32 ? MIR_LTS : MIR_ULTS);
+    return (t == MIR_T_F     ? MIR_FLT
+            : t == MIR_T_D   ? MIR_DLT
+            : t == MIR_T_LD  ? MIR_LDLT
+            : t == MIR_T_I64 ? MIR_LT
+            : t == MIR_T_U64 ? MIR_ULT
+            : t == MIR_T_I32 ? MIR_LTS
+                             : MIR_ULTS);
   case N_LE:
-    return (t == MIR_T_F
-              ? MIR_FLE
-              : t == MIR_T_D
-                  ? MIR_DLE
-                  : t == MIR_T_LD
-                      ? MIR_LDLE
-                      : t == MIR_T_I64
-                          ? MIR_LE
-                          : t == MIR_T_U64 ? MIR_ULE : t == MIR_T_I32 ? MIR_LES : MIR_ULES);
+    return (t == MIR_T_F     ? MIR_FLE
+            : t == MIR_T_D   ? MIR_DLE
+            : t == MIR_T_LD  ? MIR_LDLE
+            : t == MIR_T_I64 ? MIR_LE
+            : t == MIR_T_U64 ? MIR_ULE
+            : t == MIR_T_I32 ? MIR_LES
+                             : MIR_ULES);
   case N_GT:
-    return (t == MIR_T_F
-              ? MIR_FGT
-              : t == MIR_T_D
-                  ? MIR_DGT
-                  : t == MIR_T_LD
-                      ? MIR_LDGT
-                      : t == MIR_T_I64
-                          ? MIR_GT
-                          : t == MIR_T_U64 ? MIR_UGT : t == MIR_T_I32 ? MIR_GTS : MIR_UGTS);
+    return (t == MIR_T_F     ? MIR_FGT
+            : t == MIR_T_D   ? MIR_DGT
+            : t == MIR_T_LD  ? MIR_LDGT
+            : t == MIR_T_I64 ? MIR_GT
+            : t == MIR_T_U64 ? MIR_UGT
+            : t == MIR_T_I32 ? MIR_GTS
+                             : MIR_UGTS);
   case N_GE:
-    return (t == MIR_T_F
-              ? MIR_FGE
-              : t == MIR_T_D
-                  ? MIR_DGE
-                  : t == MIR_T_LD
-                      ? MIR_LDGE
-                      : t == MIR_T_I64
-                          ? MIR_GE
-                          : t == MIR_T_U64 ? MIR_UGE : t == MIR_T_I32 ? MIR_GES : MIR_UGES);
+    return (t == MIR_T_F     ? MIR_FGE
+            : t == MIR_T_D   ? MIR_DGE
+            : t == MIR_T_LD  ? MIR_LDGE
+            : t == MIR_T_I64 ? MIR_GE
+            : t == MIR_T_U64 ? MIR_UGE
+            : t == MIR_T_I32 ? MIR_GES
+                             : MIR_UGES);
   default: assert (FALSE); return MIR_INSN_BOUND;
   }
 }
@@ -10385,8 +10518,7 @@ static MIR_insn_code_t get_compare_branch_code (MIR_insn_code_t code) {
   case MIR_##n##S: return MIR_B##n##S; \
   case MIR_F##n: return MIR_FB##n;     \
   case MIR_D##n: return MIR_DB##n;     \
-  case MIR_LD##n:                      \
-    return MIR_LDB##n;
+  case MIR_LD##n: return MIR_LDB##n;
 #define BCMP(n)                    \
   B (n)                            \
   case MIR_U##n: return MIR_UB##n; \
@@ -10432,7 +10564,8 @@ static MIR_label_t get_label (c2m_ctx_t c2m_ctx, node_t target) {
 }
 
 static void top_gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_t false_label) {
-  gen (c2m_ctx, r, true_label, false_label, FALSE, NULL);
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  top_gen_last_op = gen (c2m_ctx, r, true_label, false_label, FALSE, NULL);
 }
 
 static op_t modify_for_block_move (c2m_ctx_t c2m_ctx, op_t mem, op_t index) {
@@ -10493,16 +10626,13 @@ static const char *get_reg_var_name (c2m_ctx_t c2m_ctx, MIR_type_t promoted_type
   char prefix[50];
 
   sprintf (prefix,
-           promoted_type == MIR_T_I64
-             ? "I%u_"
-             : promoted_type == MIR_T_U64
-                 ? "U%u_"
-                 : promoted_type == MIR_T_I32
-                     ? "i%u_"
-                     : promoted_type == MIR_T_U32
-                         ? "u%u_"
-                         : promoted_type == MIR_T_F ? "f%u_"
-                                                    : promoted_type == MIR_T_D ? "d%u_" : "D%u_",
+           promoted_type == MIR_T_I64   ? "I%u_"
+           : promoted_type == MIR_T_U64 ? "U%u_"
+           : promoted_type == MIR_T_I32 ? "i%u_"
+           : promoted_type == MIR_T_U32 ? "u%u_"
+           : promoted_type == MIR_T_F   ? "f%u_"
+           : promoted_type == MIR_T_D   ? "d%u_"
+                                        : "D%u_",
            func_scope_num);
   VARR_TRUNC (char, temp_string, 0);
   add_to_temp_string (c2m_ctx, prefix);
@@ -10662,8 +10792,9 @@ static MIR_UNUSED const char *gen_get_indexed_name (c2m_ctx_t c2m_ctx, const cha
 }
 
 /* Can be used by target functions */
-static inline void gen_multiple_load_store (c2m_ctx_t c2m_ctx, struct type *type, MIR_op_t *var_ops,
-                                            MIR_op_t mem_op, int load_p) {
+static inline void MIR_UNUSED gen_multiple_load_store (c2m_ctx_t c2m_ctx, struct type *type,
+                                                       MIR_op_t *var_ops, MIR_op_t mem_op,
+                                                       int load_p) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_context_t ctx = c2m_ctx->ctx;
   MIR_op_t op, var_op;
@@ -10869,11 +11000,10 @@ static void collect_init_els (c2m_ctx_t c2m_ctx, decl_t member_decl, struct type
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   struct type *type = *type_ptr;
   struct expr *cexpr;
-  node_t literal, des_list, curr_des, str, init, value, size_node;
+  node_t literal, des_list, curr_des, str, init, value;
   mir_llong MIR_UNUSED size_val = 0; /* to remove an uninitialized warning */
   size_t mark;
   symbol_t sym;
-  struct expr *sexpr;
   init_el_t init_el;
   int addr_p = FALSE; /* to remove an uninitialized warning */
   int MIR_UNUSED found_p, MIR_UNUSED ok_p;
@@ -10892,6 +11022,7 @@ check_one_value:
     assert (initializer->code == N_STR || initializer->code == N_STR16
             || initializer->code == N_STR32 || !const_only_p || cexpr->const_p
             || cexpr->const_addr_p || (literal != NULL && addr_p));
+    init_el.c2m_ctx = c2m_ctx;
     init_el.num = VARR_LENGTH (init_el_t, init_els);
     init_el.offset = get_object_path_offset (c2m_ctx);
     init_el.member_decl = member_decl;
@@ -10909,6 +11040,7 @@ check_one_value:
            && ((str = NL_EL (init->u.ops, 1))->code == N_STR || str->code == N_STR16
                || str->code == N_STR32)))
       && type->mode == TM_ARR && init_compatible_string_p (str, type->u.arr_type->el_type)) {
+    init_el.c2m_ctx = c2m_ctx;
     init_el.num = VARR_LENGTH (init_el_t, init_els);
     init_el.offset = get_object_path_offset (c2m_ctx);
     init_el.member_decl = NULL;
@@ -10930,13 +11062,11 @@ check_one_value:
   }
   mark = VARR_LENGTH (init_object_t, init_object_path);
   init_object.container_type = type;
-  init_object.designator_p = FALSE;
+  init_object.field_designator_p = FALSE;
   if (type->mode == TM_ARR) {
-    size_node = type->u.arr_type->size;
-    sexpr = size_node->attr;
+    size_val = get_arr_type_size (c2m_ctx, type);
     /* we already figured out the array size during check: */
-    assert (size_node->code != N_IGNORE && sexpr->const_p && integer_type_p (sexpr->type));
-    size_val = sexpr->u.i_val;
+    assert (size_val >= 0);
     init_object.u.curr_index = -1;
   } else {
     init_object.u.curr_member = NULL;
@@ -10949,35 +11079,53 @@ check_one_value:
     assert ((value->code != N_LIST && value->code != N_COMPOUND_LITERAL) || type->mode == TM_ARR
             || type->mode == TM_STRUCT || type->mode == TM_UNION);
     if ((curr_des = NL_HEAD (des_list->u.ops)) == NULL) {
-      ok_p = update_path_and_do (c2m_ctx, collect_init_els, mark, value, const_only_p, NULL,
+      ok_p = update_path_and_do (c2m_ctx, TRUE, collect_init_els, mark, value, const_only_p, NULL,
                                  POS (init), "");
       assert (ok_p);
     } else {
-      for (; curr_des != NULL; curr_des = NL_NEXT (curr_des)) {
-        VARR_TRUNC (init_object_t, init_object_path, mark + 1);
-        init_object = VARR_POP (init_object_t, init_object_path);
+      struct type *curr_type = type;
+      mir_llong arr_size_val MIR_UNUSED;
+      int first_p = TRUE;
+
+      VARR_TRUNC (init_object_t, init_object_path, mark + 1);
+      for (; curr_des != NULL; curr_des = NL_NEXT (curr_des), first_p = FALSE) {
+        init_object = VARR_LAST (init_object_t, init_object_path);
+        if (first_p) {
+          VARR_POP (init_object_t, init_object_path);
+        } else {
+          if (init_object.container_type->mode == TM_ARR) {
+            curr_type = init_object.container_type->u.arr_type->el_type;
+          } else {
+            assert (init_object.container_type->mode == TM_STRUCT
+                    || init_object.container_type->mode == TM_UNION);
+            decl_t el_decl = init_object.u.curr_member->attr;
+            curr_type = el_decl->decl_spec.type;
+          }
+        }
         if (curr_des->code == N_FIELD_ID) {
           node_t id = NL_HEAD (curr_des->u.ops);
 
           /* field should be only in struct/union initializer */
-          assert (type->mode == TM_STRUCT || type->mode == TM_UNION);
-          found_p = symbol_find (c2m_ctx, S_REGULAR, id, type->u.tag_type, &sym);
+          assert (curr_type->mode == TM_STRUCT || curr_type->mode == TM_UNION);
+          found_p = symbol_find (c2m_ctx, S_REGULAR, id, curr_type->u.tag_type, &sym);
           assert (found_p); /* field should present */
-          process_init_field_designator (c2m_ctx, sym.def_node, init_object.container_type);
-          ok_p = update_path_and_do (c2m_ctx, collect_init_els, mark, value, const_only_p, NULL,
-                                     POS (init), "");
+          process_init_field_designator (c2m_ctx, sym.def_node, curr_type);
+          ok_p = update_path_and_do (c2m_ctx, NL_NEXT (curr_des) == NULL, collect_init_els, mark,
+                                     value, const_only_p, NULL, POS (init), "");
           assert (ok_p);
         } else {
           cexpr = curr_des->attr;
           /* index should be in array initializer and const expr of right type and value: */
-          assert (type->mode == TM_ARR && cexpr->const_p && integer_type_p (cexpr->type)
-                  && !incomplete_type_p (c2m_ctx, type) && size_val >= 0
-                  && size_val > cexpr->u.u_val);
+          assert (curr_type->mode == TM_ARR && cexpr->const_p && integer_type_p (cexpr->type)
+                  && !incomplete_type_p (c2m_ctx, curr_type)
+                  && (arr_size_val = get_arr_type_size (c2m_ctx, curr_type)) >= 0
+                  && arr_size_val > cexpr->u.u_val);
           init_object.u.curr_index = cexpr->u.i_val - 1;
-          init_object.designator_p = FALSE;
+          init_object.field_designator_p = FALSE;
+          init_object.container_type = curr_type;
           VARR_PUSH (init_object_t, init_object_path, init_object);
-          ok_p = update_path_and_do (c2m_ctx, collect_init_els, mark, value, const_only_p, NULL,
-                                     POS (init), "");
+          ok_p = update_path_and_do (c2m_ctx, NL_NEXT (curr_des) == NULL, collect_init_els, mark,
+                                     value, const_only_p, NULL, POS (init), "");
           assert (ok_p);
         }
       }
@@ -11005,10 +11153,16 @@ static int cmp_init_el (const void *p1, const void *p2) {
   else if (el1->member_decl != NULL && el2->member_decl != NULL
            && el1->member_decl->bit_offset > el2->member_decl->bit_offset)
     return 1;
-  else if (el1->num < el2->num)
-    return 1;
-  else if (el1->num > el2->num)
+  else if (el1->member_decl != NULL
+           && type_size (el1->c2m_ctx, el1->member_decl->decl_spec.type) == 0)
     return -1;
+  else if (el2->member_decl != NULL
+           && type_size (el2->c2m_ctx, el2->member_decl->decl_spec.type) == 0)
+    return 1;
+  else if (el1->num < el2->num)
+    return -1;
+  else if (el1->num > el2->num)
+    return 1;
   else
     return 0;
 }
@@ -11230,7 +11384,7 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
   init_el_t init_el, next_init_el;
   MIR_reg_t base;
   MIR_type_t t;
-  MIR_item_t data;
+  MIR_item_t data = NULL; /* to remove a warning */
   struct expr *e;
 
   if (var.mir_op.mode == MIR_OP_REG) { /* scalar initialization: */
@@ -11256,13 +11410,10 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
       val
         = gen (c2m_ctx, init_el.init, NULL, NULL, t != MIR_T_UNDEF, t != MIR_T_UNDEF ? NULL : &val);
       if (!scalar_type_p (init_el.el_type)) {
-        mir_size_t s = init_el.init->code == N_STR
-                         ? init_el.init->u.s.len
-                         : init_el.init->code == N_STR16
-                             ? init_el.init->u.s.len / 2
-                             : init_el.init->code == N_STR32
-                                 ? init_el.init->u.s.len / 4
-                                 : raw_type_size (c2m_ctx, init_el.el_type);
+        mir_size_t s = init_el.init->code == N_STR     ? init_el.init->u.s.len
+                       : init_el.init->code == N_STR16 ? init_el.init->u.s.len / 2
+                       : init_el.init->code == N_STR32 ? init_el.init->u.s.len / 4
+                                                       : raw_type_size (c2m_ctx, init_el.el_type);
         gen_memcpy (c2m_ctx, offset + rel_offset, base, val, s);
         rel_offset = init_el.offset + s;
       } else {
@@ -11400,7 +11551,7 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
       global_name = NULL;
       rel_offset = init_el.offset + data_size;
     }
-    if (rel_offset < size) { /* fill the tail: */
+    if (rel_offset < size || size == 0) { /* fill the tail: */
       data = MIR_new_bss (ctx, global_name, size - rel_offset);
       if (global_name != NULL) var.decl->item = data;
     }
@@ -11517,9 +11668,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     ld = r->u.ld;
   float_val:
     mir_type = get_mir_type (c2m_ctx, ((struct expr *) r->attr)->type);
-    res = new_op (NULL, (mir_type == MIR_T_F ? MIR_new_float_op (ctx, ld)
-                                             : mir_type == MIR_T_D ? MIR_new_double_op (ctx, ld)
-                                                                   : MIR_new_ldouble_op (ctx, ld)));
+    res = new_op (NULL, (mir_type == MIR_T_F   ? MIR_new_float_op (ctx, ld)
+                         : mir_type == MIR_T_D ? MIR_new_double_op (ctx, ld)
+                                               : MIR_new_ldouble_op (ctx, ld)));
     break;
   case N_CH: ll = r->u.ch; goto int_val;
   case N_CH16:
@@ -11613,15 +11764,17 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
 
       gen_unary_op (c2m_ctx, r, &op1, &res);
       if (r->code == N_ADD) {
-        ic = (ic == MIR_FADD ? MIR_FMOV
-                             : ic == MIR_DADD ? MIR_DMOV : ic == MIR_LDADD ? MIR_LDMOV : MIR_MOV);
+        ic = (ic == MIR_FADD    ? MIR_FMOV
+              : ic == MIR_DADD  ? MIR_DMOV
+              : ic == MIR_LDADD ? MIR_LDMOV
+                                : MIR_MOV);
         emit2 (c2m_ctx, ic, res.mir_op, op1.mir_op);
       } else {
-        ic
-          = (ic == MIR_FSUB
-               ? MIR_FNEG
-               : ic == MIR_DSUB ? MIR_DNEG
-                                : ic == MIR_LDSUB ? MIR_LDNEG : ic == MIR_SUB ? MIR_NEG : MIR_NEGS);
+        ic = (ic == MIR_FSUB    ? MIR_FNEG
+              : ic == MIR_DSUB  ? MIR_DNEG
+              : ic == MIR_LDSUB ? MIR_LDNEG
+              : ic == MIR_SUB   ? MIR_NEG
+                                : MIR_NEGS);
         emit2 (c2m_ctx, ic, res.mir_op, op1.mir_op);
       }
       break;
@@ -11778,15 +11931,26 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     MIR_type_t ind_t;
     node_t arr = NL_HEAD (r->u.ops);
     struct type *type = ((struct expr *) r->attr)->type;
+    struct type *arr_type = ((struct expr *) arr->attr)->type;
     mir_size_t size = type_size (c2m_ctx, type);
 
     t = get_mir_type (c2m_ctx, type);
     op1 = gen (c2m_ctx, arr, NULL, NULL, TRUE, NULL);
     op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, TRUE, NULL);
     ind_t = get_mir_type (c2m_ctx, ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type);
+#if MIR_PTR32
     op2 = force_reg (c2m_ctx, op2, ind_t);
-    if (type->mode == TM_PTR && type->arr_type != NULL) { /* it was an array */
+#else
+    if (op2.mir_op.mode != MIR_OP_REG) {
+      op2 = force_reg (c2m_ctx, op2, ind_t);
+    } else if (ind_t != MIR_T_I64 && ind_t != MIR_T_U64) {
+      op2 = cast (c2m_ctx, op2, ind_t == MIR_T_I32 ? MIR_T_I64 : MIR_T_U64, FALSE);
+    }
+#endif
+    if (type->mode == TM_PTR && type->arr_type != NULL) { /* elem is an array */
       size = type_size (c2m_ctx, type->arr_type);
+    }
+    if (arr_type->mode == TM_PTR && arr_type->arr_type != NULL) { /* indexing an array */
       op1 = force_reg_or_mem (c2m_ctx, op1, MIR_T_I64);
       assert (op1.mir_op.mode == MIR_OP_REG || op1.mir_op.mode == MIR_OP_MEM);
     } else {
@@ -11855,7 +12019,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     op1 = force_reg (c2m_ctx, op1, MIR_T_I64);
     assert (op1.mir_op.mode == MIR_OP_REG);
     if ((type = ((struct expr *) r->attr)->type)->mode == TM_PTR
-        && type->u.ptr_type->mode == TM_FUNC) {
+        && type->u.ptr_type->mode == TM_FUNC && type->func_type_before_adjustment_p) {
       res = op1;
     } else {
       t = get_mir_type (c2m_ctx, type);
@@ -11969,10 +12133,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                         || decl->decl_spec.linkage == N_EXTERN || decl->decl_spec.static_p
                         || decl->decl_spec.thread_local_p,
                       TRUE);
-    if (decl->scope == top_scope)
-      qsort (VARR_ADDR (init_el_t, init_els) + init_start,
-             VARR_LENGTH (init_el_t, init_els) - init_start, sizeof (init_el_t), cmp_init_el);
-    if (decl->scope == top_scope || decl->decl_spec.static_p) {
+    qsort (VARR_ADDR (init_el_t, init_els) + init_start,
+           VARR_LENGTH (init_el_t, init_els) - init_start, sizeof (init_el_t), cmp_init_el);
+    if (decl->scope == top_scope || decl->decl_spec.static_p || decl->decl_spec.thread_local_p) {
       var = new_op (decl, MIR_new_ref_op (ctx, NULL));
     } else {
       t = get_mir_type (c2m_ctx, expr->type);
@@ -11981,7 +12144,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     }
     gen_initializer (c2m_ctx, init_start, var, global_name,
                      raw_type_size (c2m_ctx, decl->decl_spec.type),
-                     decl->scope != top_scope && !decl->decl_spec.static_p);
+                     decl->scope != top_scope && !decl->decl_spec.static_p
+                       && !decl->decl_spec.thread_local_p);
     VARR_TRUNC (init_el_t, init_els, init_start);
     if (var.mir_op.mode == MIR_OP_REF) var.mir_op.u.ref = var.decl->item;
     res = var;
@@ -11997,9 +12161,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     MIR_item_t proto_item;
     MIR_insn_t call_insn;
     mir_size_t saved_call_arg_area_offset_before_args, arg_area_offset;
-    int va_arg_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_VA_ARG) == 0;
-    int va_start_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_VA_START) == 0;
-    int alloca_p = call_expr->builtin_call_p && strcmp (func->u.s.s, ALLOCA) == 0;
+    int va_arg_p = call_expr->builtin_call_p && str_eq_p (func->u.s.s, BUILTIN_VA_ARG);
+    int va_start_p = call_expr->builtin_call_p && str_eq_p (func->u.s.s, BUILTIN_VA_START);
+    int alloca_p = call_expr->builtin_call_p && str_eq_p (func->u.s.s, ALLOCA);
     int builtin_call_p = alloca_p || va_arg_p || va_start_p, inline_p = FALSE;
     node_t block = NL_EL (curr_func_def->u.ops, 3);
     struct node_scope *ns = block->attr;
@@ -12031,13 +12195,15 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.mem.base, 0, 1);
       t = MIR_T_I64;
     } else if (type->mode == TM_STRUCT || type->mode == TM_UNION) { /* passed in regs */
-      res = get_new_temp (c2m_ctx, MIR_T_I64);
-      emit3 (c2m_ctx, MIR_ADD, res.mir_op,
-             MIR_new_reg_op (ctx, MIR_reg (ctx, FP_NAME, curr_func->u.func)),
-             MIR_new_int_op (ctx, arg_area_offset));
-      if (!builtin_call_p) update_call_arg_area_offset (c2m_ctx, type, FALSE);
-      res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.reg, 0, 1);
-      t = MIR_T_I64;
+      if (!va_arg_p) {
+        res = get_new_temp (c2m_ctx, MIR_T_I64);
+        emit3 (c2m_ctx, MIR_ADD, res.mir_op,
+               MIR_new_reg_op (ctx, MIR_reg (ctx, FP_NAME, curr_func->u.func)),
+               MIR_new_int_op (ctx, arg_area_offset));
+        if (!builtin_call_p) update_call_arg_area_offset (c2m_ctx, type, FALSE);
+        res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.reg, 0, 1);
+        t = MIR_T_I64;
+      }
     } else if (n > 0) {
       assert (n == 1);
       t = promote_mir_int_type (get_mir_type (c2m_ctx, type));
@@ -12054,14 +12220,20 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
           op2 = mem_to_address (c2m_ctx, op2, FALSE);
       }
       if (type->mode == TM_STRUCT || type->mode == TM_UNION) {
-        assert (desirable_dest != NULL && desirable_dest->mir_op.mode == MIR_OP_MEM);
-        res = mem_to_address (c2m_ctx, *desirable_dest, TRUE);
+        if (desirable_dest == NULL) {
+          res = get_new_temp (c2m_ctx, MIR_T_I64);
+          MIR_append_insn (ctx, curr_func,
+                           MIR_new_insn (ctx, MIR_MOV, res.mir_op, MIR_new_int_op (ctx, 0)));
+        } else {
+          assert (desirable_dest->mir_op.mode == MIR_OP_MEM);
+          res = mem_to_address (c2m_ctx, *desirable_dest, TRUE);
+        }
         MIR_append_insn (ctx, curr_func,
                          MIR_new_insn (ctx, MIR_VA_BLOCK_ARG, res.mir_op, op2.mir_op,
                                        MIR_new_int_op (ctx, type_size (c2m_ctx, type)),
                                        MIR_new_int_op (ctx, target_get_blk_type (c2m_ctx, type)
                                                               - MIR_T_BLK)));
-        res = *desirable_dest;
+        if (desirable_dest != NULL) res = *desirable_dest;
       } else {
         MIR_append_insn (ctx, curr_func,
                          MIR_new_insn (ctx, MIR_VA_ARG, op1.mir_op, op2.mir_op,
@@ -12094,16 +12266,19 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       param_list = func_type->u.func_type->param_list;
       param = NL_HEAD (param_list->u.ops);
       for (node_t arg = NL_HEAD (args->u.ops); arg != NULL; arg = NL_NEXT (arg)) {
+        struct type *arg_type;
         e = arg->attr;
         struct_p = e->type->mode == TM_STRUCT || e->type->mode == TM_UNION;
         op2 = gen (c2m_ctx, arg, NULL, NULL, !struct_p, NULL);
         assert (param != NULL || NL_HEAD (param_list->u.ops) == NULL
                 || func_type->u.func_type->dots_p);
+        arg_type = e->type;
         if (struct_p) {
         } else if (param != NULL) {
           assert (param->code == N_SPEC_DECL || param->code == N_TYPE);
           decl_spec = get_param_decl_spec (param);
-          t = get_mir_type (c2m_ctx, decl_spec->type);
+          arg_type = decl_spec->type;
+          t = get_mir_type (c2m_ctx, arg_type);
           t = promote_mir_int_type (t);
           op2 = promote (c2m_ctx, op2, t, FALSE);
         } else {
@@ -12111,7 +12286,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
           t = promote_mir_int_type (t);
           op2 = promote (c2m_ctx, op2, t == MIR_T_F ? MIR_T_D : t, FALSE);
         }
-        target_add_call_arg_op (c2m_ctx, e->type, &arg_info, op2);
+        target_add_call_arg_op (c2m_ctx, arg_type, &arg_info, op2);
         if (param != NULL) param = NL_NEXT (param);
       }
       call_insn = MIR_new_insn_arr (ctx, (inline_p ? MIR_INLINE : MIR_CALL),
@@ -12191,9 +12366,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                               || decl->decl_spec.linkage == N_EXTERN || decl->decl_spec.static_p
                               || decl->decl_spec.thread_local_p,
                             TRUE);
-          if (decl->scope == top_scope)
-            qsort (VARR_ADDR (init_el_t, init_els) + init_start,
-                   VARR_LENGTH (init_el_t, init_els) - init_start, sizeof (init_el_t), cmp_init_el);
+          qsort (VARR_ADDR (init_el_t, init_els) + init_start,
+                 VARR_LENGTH (init_el_t, init_els) - init_start, sizeof (init_el_t), cmp_init_el);
           if (id->attr == NULL) {
             node_t saved_scope = curr_scope;
 
@@ -12201,7 +12375,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
             check (c2m_ctx, id, NULL);
             curr_scope = saved_scope;
           }
-          if (decl->scope == top_scope || decl->decl_spec.static_p) {
+          if (decl->scope == top_scope || decl->decl_spec.static_p
+              || decl->decl_spec.thread_local_p) {
             var = new_op (decl, MIR_new_ref_op (ctx, NULL));
           } else {
             var = gen (c2m_ctx, id, NULL, NULL, FALSE, NULL);
@@ -12211,7 +12386,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
           }
           gen_initializer (c2m_ctx, init_start, var, name,
                            raw_type_size (c2m_ctx, decl->decl_spec.type),
-                           decl->scope != top_scope && !decl->decl_spec.static_p);
+                           decl->scope != top_scope && !decl->decl_spec.static_p
+                             && !decl->decl_spec.thread_local_p);
           VARR_TRUNC (init_el_t, init_els, init_start);
         }
         if (decl->item != NULL && decl->scope == top_scope && !decl->decl_spec.static_p) {
@@ -12250,9 +12426,6 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     curr_func_def = r;
     curr_call_arg_area_offset = 0;
     collect_args_and_func_types (c2m_ctx, decl_type->u.func_type);
-    res_type = (VARR_LENGTH (MIR_type_t, proto_info.ret_types) == 0
-                  ? MIR_T_UNDEF
-                  : VARR_GET (MIR_type_t, proto_info.ret_types, 0));
     curr_func = ((decl_type->u.func_type->dots_p
                     ? MIR_new_vararg_func_arr
                     : MIR_new_func_arr) (ctx, NL_HEAD (declarator->u.ops)->u.s.s,
@@ -12304,18 +12477,22 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     gen (c2m_ctx, stmt, NULL, NULL, FALSE, NULL);
     if ((insn = DLIST_TAIL (MIR_insn_t, curr_func->u.func->insns)) == NULL
         || (insn->code != MIR_RET && insn->code != MIR_JMP)) {
-      if (res_type == MIR_T_UNDEF) {
+      if (VARR_LENGTH (MIR_type_t, proto_info.ret_types) == 0) {
         emit_insn (c2m_ctx, MIR_new_ret_insn (ctx, 0));
-      } else if (res_type == MIR_T_D) {
-        emit_insn (c2m_ctx, MIR_new_ret_insn (ctx, 1, MIR_new_double_op (ctx, 0.0)));
-      } else if (res_type == MIR_T_LD) {
-        emit_insn (c2m_ctx, MIR_new_ret_insn (ctx, 1, MIR_new_ldouble_op (ctx, 0.0)));
-      } else if (res_type == MIR_T_F) {
-        emit_insn (c2m_ctx, MIR_new_ret_insn (ctx, 1, MIR_new_float_op (ctx, 0.0)));
       } else {
         VARR_TRUNC (MIR_op_t, ret_ops, 0);
-        for (size_t i = 0; i < VARR_LENGTH (MIR_type_t, proto_info.ret_types); i++)
-          VARR_PUSH (MIR_op_t, ret_ops, MIR_new_int_op (ctx, 0));
+        for (size_t i = 0; i < VARR_LENGTH (MIR_type_t, proto_info.ret_types); i++) {
+          res_type = VARR_GET (MIR_type_t, proto_info.ret_types, i);
+          if (res_type == MIR_T_D) {
+            VARR_PUSH (MIR_op_t, ret_ops, MIR_new_double_op (ctx, 0.0));
+          } else if (res_type == MIR_T_LD) {
+            VARR_PUSH (MIR_op_t, ret_ops, MIR_new_ldouble_op (ctx, 0.0));
+          } else if (res_type == MIR_T_F) {
+            VARR_PUSH (MIR_op_t, ret_ops, MIR_new_float_op (ctx, 0.0));
+          } else {
+            VARR_PUSH (MIR_op_t, ret_ops, MIR_new_int_op (ctx, 0));
+          }
+        }
         emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_RET, VARR_LENGTH (MIR_op_t, ret_ops),
                                               VARR_ADDR (MIR_op_t, ret_ops)));
       }
@@ -12324,6 +12501,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     if (decl->decl_spec.linkage == N_EXTERN)
       MIR_new_export (ctx, NL_HEAD (declarator->u.ops)->u.s.s);
     finish_curr_func_reg_vars (c2m_ctx);
+    break;
+  }
+  case N_STMTEXPR: {
+    gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL);
+    res = top_gen_last_op;
     break;
   }
   case N_BLOCK:
@@ -12735,7 +12917,7 @@ static const char *get_node_name (node_code_t code) {
     C (IGNORE);
     REP8 (C, I, L, LL, U, UL, ULL, F, D);
     REP7 (C, LD, CH, CH16, CH32, STR, STR16, STR32);
-    REP5 (C, ID, COMMA, ANDAND, OROR, EQ);
+    REP6 (C, ID, COMMA, ANDAND, OROR, EQ, STMTEXPR);
     REP8 (C, NE, LT, LE, GT, GE, ASSIGN, BITWISE_NOT, NOT);
     REP8 (C, AND, AND_ASSIGN, OR, OR_ASSIGN, XOR, XOR_ASSIGN, LSH, LSH_ASSIGN);
     REP8 (C, RSH, RSH_ASSIGN, ADD, ADD_ASSIGN, SUB, SUB_ASSIGN, MUL, MUL_ASSIGN);
@@ -12829,6 +13011,11 @@ static void print_type (c2m_ctx_t c2m_ctx, FILE *f, struct type *type) {
     fprintf (f, "ptr (");
     print_type (c2m_ctx, f, type->u.ptr_type);
     fprintf (f, ")");
+    if (type->arr_type != NULL) {
+      fprintf (f, ", former ");
+      print_type (c2m_ctx, f, type->arr_type);
+    }
+    if (type->func_type_before_adjustment_p) fprintf (f, ", former func");
     break;
   case TM_STRUCT: fprintf (f, "struct node %u", type->u.tag_type->uid); break;
   case TM_UNION: fprintf (f, "union node %u", type->u.tag_type->uid); break;
@@ -12938,9 +13125,9 @@ static void print_node (c2m_ctx_t c2m_ctx, FILE *f, node_t n, int indent, int at
   case N_STR16:
   case N_STR32:
     fprintf (f, " %s\"", n->code == N_STR ? "" : n->code == N_STR16 ? "u" : "U");
-    (n->code == N_STR
-       ? print_chars
-       : n->code == N_STR16 ? print_chars16 : print_chars32) (f, n->u.s.s, n->u.s.len);
+    (n->code == N_STR     ? print_chars
+     : n->code == N_STR16 ? print_chars16
+                          : print_chars32) (f, n->u.s.s, n->u.s.len);
     fprintf (f, "\"");
     goto expr;
   case N_ID:
@@ -12998,6 +13185,7 @@ static void print_node (c2m_ctx_t c2m_ctx, FILE *f, node_t n, int indent, int at
   case N_COMPOUND_LITERAL:
   case N_CALL:
   case N_GENERIC:
+  case N_STMTEXPR:
     if (attr_p && n->attr != NULL) print_expr (c2m_ctx, f, n->attr);
     fprintf (f, "\n");
     print_ops (c2m_ctx, f, n, indent, attr_p);

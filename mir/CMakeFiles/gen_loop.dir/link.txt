@@ -1,1 +1,0 @@
-/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/gen_loop.dir/mir-tests/loop-sieve-gen.c.o  -o gen_loop  -lpthread libmir.a -lpthread 

@@ -1,5 +1,5 @@
 /* This file is a part of MIR project.
-   Copyright (C) 2018-2021 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+   Copyright (C) 2018-2023 Vladimir Makarov <vmakarov.gcc@gmail.com>.
 */
 
 #ifndef MIR_VARR_H
@@ -8,6 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #if !defined(VARR_ENABLE_CHECKING) && !defined(NDEBUG)
 #define VARR_ENABLE_CHECKING
@@ -168,5 +172,9 @@ static inline void MIR_VARR_NO_RETURN mir_varr_error (const char *message) {
 #define VARR_POP(T, V) (VARR_OP (T, pop) (V))
 #define VARR_FOREACH_ELEM(T, V, I, EL) \
   for ((I) = 0; (I) >= VARR_LENGTH (T, V) ? 0 : (EL = VARR_GET (T, V, I), 1); (I)++)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* #ifndef MIR_VARR_H */

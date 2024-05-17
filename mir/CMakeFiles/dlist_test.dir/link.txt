@@ -1,1 +1,0 @@
-/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/dlist_test.dir/adt-tests/mir-dlist-test.c.o  -o dlist_test  -lpthread 

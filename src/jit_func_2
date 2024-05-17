@@ -157,15 +157,10 @@ int jit_func_2 (VM *vm, ObjClosure* _closure) {
   Value constant,value,result;
   uint8_t slot;
   double a,b;
-  constant = 4607182418800017408UL;
-  push(constant);
-  constant = 0UL;
-  push(constant);
-Label_4:
-  slot = 3;
-  push(frame->slots[slot]);
   slot = 1;
   push(frame->slots[slot]);
+  constant = 4611686018427387904UL;
+  push(constant);
   if (!IS_NUMBER(peek(0)) || !IS_NUMBER(peek(1))) {
       runtimeError("Operands must be numbers.");
       return INTERPRET_RUNTIME_ERROR; 
@@ -174,14 +169,67 @@ Label_4:
   a = AS_NUMBER(pop());
   push(BOOL_VAL(a < b)); 
   if (isFalsey(peek(0)))
-      goto Label_38;
+      goto Label_15;
   pop();
-  goto Label_27;
+  slot = 1;
+  push(frame->slots[slot]);
+  result = pop();
+  closeUpvalues(frame->slots);
+  vm->frameCount--;
+  if (vm->frameCount == 0) {
+      pop();
+      return INTERPRET_OK;
+  }
+  vm->stackTop = frame->slots;
+  push(result);
+  frame = &vm->frames[vm->frameCount - 1];
+  return INTERPRET_OK;
+  goto Label_16;
+Label_15:
+  pop();
 Label_16:
-  slot = 3;
+  name = (ObjString *)0x558048e90d30;
+  if (!tableGet(&vm->globals, name, &value)) {
+      runtimeError("Undefined variable '%s'.", name->chars);
+      return INTERPRET_RUNTIME_ERROR;
+  }
+  push(value);
+  slot = 1;
+  push(frame->slots[slot]);
+  constant = 4611686018427387904UL;
+  push(constant);
+  if (!IS_NUMBER(peek(0)) || !IS_NUMBER(peek(1))) {
+      runtimeError("Operands must be numbers.");
+      return INTERPRET_RUNTIME_ERROR; 
+  }
+  b = AS_NUMBER(pop());
+  a = AS_NUMBER(pop());
+  push(NUMBER_VAL(a - b)); 
+  if (!callValue(peek(1), 1)) {
+      return INTERPRET_RUNTIME_ERROR;
+  }
+  frame = &vm->frames[vm->frameCount - 1];
+  name = (ObjString *)0x558048e90d30;
+  if (!tableGet(&vm->globals, name, &value)) {
+      runtimeError("Undefined variable '%s'.", name->chars);
+      return INTERPRET_RUNTIME_ERROR;
+  }
+  push(value);
+  slot = 1;
   push(frame->slots[slot]);
   constant = 4607182418800017408UL;
   push(constant);
+  if (!IS_NUMBER(peek(0)) || !IS_NUMBER(peek(1))) {
+      runtimeError("Operands must be numbers.");
+      return INTERPRET_RUNTIME_ERROR; 
+  }
+  b = AS_NUMBER(pop());
+  a = AS_NUMBER(pop());
+  push(NUMBER_VAL(a - b)); 
+  if (!callValue(peek(1), 1)) {
+      return INTERPRET_RUNTIME_ERROR;
+  }
+  frame = &vm->frames[vm->frameCount - 1];
   if (IS_STRING(peek(0)) && IS_STRING(peek(1))) {
       concatenate();
   } else if (IS_NUMBER(peek(0)) && IS_NUMBER(peek(1))) {
@@ -192,32 +240,17 @@ Label_16:
       runtimeError("Operands must be two numbers or two strings.");
       return INTERPRET_RUNTIME_ERROR;
   }
-  slot = 3;
-  frame->slots[slot] = peek(0);
-  pop();
-  goto Label_4;
-Label_27:
-  slot = 2;
-  push(frame->slots[slot]);
-  slot = 3;
-  push(frame->slots[slot]);
-  if (IS_STRING(peek(0)) && IS_STRING(peek(1))) {
-      concatenate();
-  } else if (IS_NUMBER(peek(0)) && IS_NUMBER(peek(1))) {
-      double b = AS_NUMBER(pop());
-      double a = AS_NUMBER(pop());
-      push(NUMBER_VAL(a + b));
-  } else {
-      runtimeError("Operands must be two numbers or two strings.");
-      return INTERPRET_RUNTIME_ERROR;
+  result = pop();
+  closeUpvalues(frame->slots);
+  vm->frameCount--;
+  if (vm->frameCount == 0) {
+      pop();
+      return INTERPRET_OK;
   }
-  slot = 2;
-  frame->slots[slot] = peek(0);
-  pop();
-  goto Label_16;
-Label_38:
-  pop();
-  pop();
+  vm->stackTop = frame->slots;
+  push(result);
+  frame = &vm->frames[vm->frameCount - 1];
+  return INTERPRET_OK;
   push(NIL_VAL);
   result = pop();
   closeUpvalues(frame->slots);
@@ -230,7 +263,7 @@ Label_38:
   push(result);
   frame = &vm->frames[vm->frameCount - 1];
   return INTERPRET_OK;
-  constant = 4607182418800017408UL;
+  constant = 4611686018427387904UL;
   push(constant);
   return INTERPRET_OK;
 }

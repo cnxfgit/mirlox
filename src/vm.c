@@ -79,7 +79,7 @@ void initVM() {
     vm.initString = copyString("init", 4);
 
 #ifdef OPEN_JIT
-    vm.mirContext = MIR_init();
+    vm.mirContext = _MIR_init();
     memset(&vm.mirOptions, 0, sizeof(struct c2mir_options));
     vm.mirOptions.message_file = stderr;
     vm.mirOptions.module_num = 0;

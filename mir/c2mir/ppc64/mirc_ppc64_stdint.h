@@ -1,5 +1,5 @@
 /* This file is a part of MIR project.
-   Copyright (C) 2020-2021 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+   Copyright (C) 2020-2023 Vladimir Makarov <vmakarov.gcc@gmail.com>.
 */
 
 /* See C11 7.20 */
@@ -108,9 +108,12 @@ static char stdint_str[]
     "\n"
     "#define SIZE_MAX (18446744073709551615UL)\n"
     "\n"
-    "/* For signed wchar_t and wint_t: */\n"
-    "#define WCHAR_MIN INT32_MIN\n"
-    "#define WCHAR_MAX INT32_MAX\n"
+    "#ifndef WCHAR_MAX\n"
+    "#define WCHAR_MAX __WCHAR_MAX__\n"
+    "#endif\n"
+    "#ifndef WCHAR_MIN\n"
+    "#define WCHAR_MIN __WCHAR_MIN__\n"
+    "#endif\n"
     "#define WINT_MIN WCHAR_MIN\n"
     "#define WINT_MAX WCHAR_MAX\n"
     "\n"

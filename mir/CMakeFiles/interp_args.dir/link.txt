@@ -1,1 +1,0 @@
-/usr/bin/cc -O2 -g -DNDEBUG   CMakeFiles/interp_args.dir/mir-tests/args-interp.c.o  -o interp_args  -lpthread libmir.a -lpthread 
