@@ -2,17 +2,17 @@ CC = gcc
 CFLAGS = -g -I../mir/ -I../mir/c2mir -L../mir/ 
 LIBS = -lmir -lpthread
 
-ifeq ($(MAKECMDGOALS), nojit)
-    CFLAGS += -UOPEN_JIT
+ifneq ($(MAKECMDGOALS), nojit)
+    CFLAGS += -DOPEN_JIT
 endif
 
-all: main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o value.o vm.o jit.o
+all: clean main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o value.o vm.o jit.o
 	$(CC) ${CFLAGS} main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o 	\
 	value.o vm.o jit.o -o lox $(LIBS)
 
-nojit: main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o value.o vm.o
-	$(CC) ${CFLAGS} main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o 	\
-	value.o vm.o -o lox $(LIBS)
+nojit: clean main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o value.o vm.o
+	$(CC) main.o chunk.o debug.o compiler.o memory.o object.o scanner.o table.o 	\
+	value.o vm.o -o lox
 
 main.o: common.h main.c chunk.h vm.h
 	$(CC) ${CFLAGS} -c main.c -o main.o 
@@ -49,4 +49,6 @@ jit.o: common.h vm.h jit.h jit.c object.h
 
 clean:
 	rm -rf *.o
-	rm lox
+	rm -rf lox*
+	rm -rf jit_func_*
+	rm -rf test.log*

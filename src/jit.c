@@ -30,6 +30,12 @@ static LoxFunction LoxFunctions[] = {
     {"numToValue", numToValue},
     {"valueToNum", valueToNum},
     {"isObjType", isObjType},
+    {"captureUpvalue", captureUpvalue},
+    {"newClass", newClass},
+    {"defineMethod", defineMethod},
+    {"bindMethod", bindMethod},
+    {"tableAddAll", tableAddAll},
+    {"tableDelete", tableDelete},
     {NULL, NULL},
 };
 
@@ -120,6 +126,8 @@ static int jit_getc(void *data) {
         CODE("  Value constant,value,result;");                                \
         CODE("  uint8_t slot;");                                               \
         CODE("  double a,b;");                                                 \
+        CODE("  ObjInstance *instance;");                                      \
+        CODE("  ObjClosure *closure;");                                        \
     } while (0)
 
 #define CLOSE_FUNC                                                             \
@@ -272,7 +280,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             CODE("      return INTERPRET_RUNTIME_ERROR;");
             CODE("  }");
 
-            CODE("  ObjInstance *instance = AS_INSTANCE(peek(0));");
+            CODE("  instance = AS_INSTANCE(peek(0));");
             ObjString *name = READ_STRING();
             CODE("  name = (ObjString *)%p;", name);
 
@@ -292,7 +300,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             CODE("      return INTERPRET_RUNTIME_ERROR;");
             CODE("  }");
 
-            CODE("  ObjInstance *instance = AS_INSTANCE(peek(1));");
+            CODE("  instance = AS_INSTANCE(peek(1));");
             ObjString *name = READ_STRING();
             CODE("  tableSet(&instance->fields, (ObjString *)%p, peek(0));",
                  name);
@@ -398,7 +406,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             ObjString *method = READ_STRING();
             int argCount = READ_BYTE();
             CODE("  ObjClass *superclass = AS_CLASS(pop());");
-            CODE("  if (!invokeFromClass(superclass, %p, %d)) {", method,
+            CODE("  if (!invokeFromClass(superclass, (ObjString*)%p, %d)) {", method,
                  argCount);
             CODE("      return INTERPRET_RUNTIME_ERROR;");
             CODE("  }");
@@ -407,7 +415,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
         }
         case OP_CLOSURE: {
             ObjFunction *function = AS_FUNCTION(READ_CONSTANT());
-            CODE("  ObjClosure *closure = newClosure((ObjFunction *) %p);",
+            CODE("  closure = newClosure((ObjFunction *) %p);",
                  function);
             CODE("  push(OBJ_VAL(closure));");
 
@@ -446,9 +454,11 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
             CODE("  return INTERPRET_OK;");
             break;
         }
-        case OP_CLASS:
-            push(OBJ_VAL(newClass(READ_STRING())));
+        case OP_CLASS: {
+            ObjString *name = READ_STRING();
+            CODE("push(OBJ_VAL(newClass((ObjString *)%p)));", name);
             break;
+        }
         case OP_INHERIT: {
             CODE("  Value superclass = peek(1);");
             CODE("  if (!IS_CLASS(superclass)) {");
@@ -464,7 +474,7 @@ static void codeGenerate(VM *vm, JitBuffer *buff, ObjClosure *closure,
         }
         case OP_METHOD: {
             ObjString *name = READ_STRING();
-            CODE("  defineMethod((OBjString *) %p);", name);
+            CODE("  defineMethod((ObjString *) %p);", name);
             break;
         }
         }
@@ -561,14 +571,17 @@ static const char LOX_HEADER[] = {
     "#define AS_NUMBER(value)    valueToNum(value)\n"
     "#define AS_OBJ(value)       ((Obj*)(uintptr_t)((value) & ~(SIGN_BIT | "
     "QNAN)))\n"
+    "#define AS_INSTANCE(value) ((ObjInstance *)AS_OBJ(value))\n"
+    "#define AS_CLASS(value) ((ObjClass *)AS_OBJ(value))\n"
+    "#define IS_INSTANCE(value) isObjType(value, OBJ_INSTANCE)\n"
     "#define IS_NUMBER(value)    (((value) & QNAN) != QNAN)\n"
     "#define IS_STRING(value) isObjType(value, OBJ_STRING)\n"
+    "#define IS_CLASS(value) isObjType(value, OBJ_CLASS)\n"
     "#define IS_OBJ(value)       (((value) & (QNAN | SIGN_BIT)) == (QNAN | "
     "SIGN_BIT))\n"
     "#define true 1\n"
     "#define false 0\n"
     "\n"
-
     "typedef enum {\n"
     "   OBJ_BOUND_METHOD,\n"
     "   OBJ_CLASS,\n"
@@ -621,6 +634,29 @@ static const char LOX_HEADER[] = {
     "   ObjString *name;\n"
     "} ObjFunction;\n"
     "\n"
+    "\n"
+    "typedef struct {\n"
+    "   ObjString *key;\n"
+    "   Value value;\n"
+    "} Entry;\n"
+    "\n"
+    "typedef struct {\n"
+    "   int count;\n"
+    "   int capacity;\n"
+    "   Entry *entries;\n"
+    "} Table;\n"
+    "typedef struct {\n"
+    "    Obj obj;\n"
+    "    ObjString *name;\n"
+    "    Table methods;\n"
+    "} ObjClass;\n"
+    "\n"
+    "typedef struct {\n"
+    "    Obj obj;\n"
+    "    ObjClass *klass;\n"
+    "    Table fields;\n"
+    "} ObjInstance;\n"
+    "\n"
     "typedef struct ObjUpvalue {\n"
     "   Obj obj;\n"
     "   Value *location;\n"
@@ -642,17 +678,6 @@ static const char LOX_HEADER[] = {
     "   uint8_t* ip;\n"
     "   Value* slots;\n"
     "} CallFrame;\n"
-    "\n"
-    "typedef struct {\n"
-    "   ObjString *key;\n"
-    "   Value value;\n"
-    "} Entry;\n"
-    "\n"
-    "typedef struct {\n"
-    "   int count;\n"
-    "   int capacity;\n"
-    "   Entry *entries;\n"
-    "} Table;\n"
     "\n"
     "typedef struct {\n"
     "   CallFrame frames[FRAMES_MAX];\n"
@@ -679,6 +704,7 @@ static const char LOX_HEADER[] = {
     "bool tableSet(Table *, ObjString *, Value);\n"
     "void closeUpvalues(Value *);\n"
     "ObjClosure *newClosure(ObjFunction *);\n"
+    "ObjClass *newClass(ObjString *name);\n"
     "bool callValue(Value, int);\n"
     "bool isFalsey(Value);\n"
     "void concatenate();\n"
@@ -686,5 +712,11 @@ static const char LOX_HEADER[] = {
     "Value numToValue(double);\n"
     "bool isObjType(Value, ObjType);\n"
     "void printValue(Value value);\n"
+    "ObjUpvalue *captureUpvalue(Value *local);\n"
+    "void defineMethod(ObjString *name);\n"
+    "bool bindMethod(ObjClass *klass, ObjString *name);\n"
+    "void tableAddAll(Table *from, Table *to);\n"
+    "bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount);\n"
+    "bool tableDelete(Table *table, ObjString *key);\n"
     "int printf (const char *__restrict __fmt, ...);\n"
     "\n"};

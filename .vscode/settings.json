@@ -43,6 +43,8 @@
         "sstream": "c",
         "streambuf": "c",
         "jit_func_1": "c",
-        "jit_func_2": "c"
+        "jit_func_2": "c",
+        "mir-gen.h": "c",
+        "stdarg.h": "c"
     },
 }

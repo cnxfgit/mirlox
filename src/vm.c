@@ -210,7 +210,7 @@ bool invoke(ObjString *name, int argCount) {
 }
 
 // 绑定方法给实例
-static bool bindMethod(ObjClass *klass, ObjString *name) {
+bool bindMethod(ObjClass *klass, ObjString *name) {
     Value method;
     if (!tableGet(&klass->methods, name, &method)) {
         runtimeError("Undefined property '%s'.", name->chars);
@@ -224,7 +224,7 @@ static bool bindMethod(ObjClass *klass, ObjString *name) {
 }
 
 // 捕获提升值
-static ObjUpvalue *captureUpvalue(Value *local) {
+ObjUpvalue *captureUpvalue(Value *local) {
     ObjUpvalue *prevUpvalue = NULL;
     ObjUpvalue *upvalue = vm.openUpvalues;
     while (upvalue != NULL && upvalue->location > local) {
@@ -260,7 +260,7 @@ void closeUpvalues(Value *last) {
 }
 
 // 定义方法
-static void defineMethod(ObjString *name) {
+void defineMethod(ObjString *name) {
     Value method = peek(0);
     ObjClass *klass = AS_CLASS(peek(1));
     tableSet(&klass->methods, name, method);

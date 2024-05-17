@@ -27,6 +27,6 @@
 #define UINT8_COUNT (UINT8_MAX + 1)
 
 // 是否开启JIT功能
-#define OPEN_JIT
+// #define OPEN_JIT
 
 #endif

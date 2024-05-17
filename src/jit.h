@@ -7,8 +7,6 @@
 #include "vm.h"
 
 
-
-
 void jitCompile(VM *vm, ObjClosure *closure, int argCount);
 
 #endif

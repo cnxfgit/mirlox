@@ -23,3 +23,60 @@
 //add(1000000);
 //var end = clock();
 //print end - start;
+
+
+// fun closure() {
+//     var count = 0;
+//     fun add() {
+//         count = count + 1;
+//         return count;
+//     }
+//     return add;
+// }
+// 
+// var add1 = closure();
+// var add2 = closure();
+// print add1();
+// print add2();
+// var start = clock();
+// for (var i = 0;i < 1000000; i=i+1) {
+//     add1();
+//     add2();
+// }
+// print add1();
+// var end = clock();
+// print end - start;
+
+//class F{
+//    init() {
+//        this.f = "12323";
+//    }
+//}
+//
+//class A < F {
+//    init() {
+//        super.init();
+//        this.a = 1;
+//    }
+//}
+//A();
+//
+//var start = clock();
+//for (var i = 0;i < 1000000; i=i+1) {
+//    var a = A();
+//    a.a = 1;
+//    a.b = i;
+//    a.c = a.a * a.b;
+//}
+//var end = clock();
+//print end - start;
+
+var a = 1;
+var start = clock();
+for (var i = 0;i < 1000000; i=i+1) {
+    a = a + i;
+    a = a * 2;
+    a = a / 3;
+}
+var end = clock();
+print end - start;

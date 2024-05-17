@@ -91,4 +91,10 @@ bool isFalsey(Value value);
 
 void concatenate();
 
+ObjUpvalue *captureUpvalue(Value *local);
+
+void defineMethod(ObjString *name);
+
+bool bindMethod(ObjClass *klass, ObjString *name);
+
 #endif
